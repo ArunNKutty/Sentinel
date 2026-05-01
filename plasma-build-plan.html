@@ -1,0 +1,714 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Plasma Build Plan</title>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Literata:opsz,wght@7..72,400;7..72,500;7..72,600&family=General+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap');
+
+:root{
+  --bg:#f8f7f4;--s:#fff;--s2:#efecea;--bdr:#d0ccc4;
+  --ink:#141618;--dim:#696b65;
+  --rust:#8c2a0e;--rust2:#fdf0ec;
+  --pine:#14593a;--pine2:#ecf7f0;
+  --indigo:#1e3a8a;--indigo2:#edf1fa;
+  --clay:#7c4a1e;--clay2:#fdf6ee;
+  --plum:#6b21a8;--plum2:#f5f1ff;
+  --slate:#475569;--slate2:#f1f5f9;
+  --m:'JetBrains Mono',monospace;
+  --body:'General Sans',sans-serif;
+  --head:'Literata',serif;
+}
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:var(--bg);color:var(--ink);font-family:var(--body);line-height:1.72;-webkit-font-smoothing:antialiased}
+.w{max-width:960px;margin:0 auto;padding:0 24px}
+
+header{padding:52px 0 24px;border-bottom:3px solid var(--ink)}
+.ey{font-family:var(--m);font-size:9px;letter-spacing:3px;text-transform:uppercase;color:var(--rust);font-weight:600}
+header h1{font-family:var(--head);font-size:34px;font-weight:500;color:var(--ink);margin:8px 0 6px;line-height:1.14;letter-spacing:-.4px}
+header p{font-size:13px;color:var(--dim);max-width:660px}
+
+nav{display:flex;gap:0;border-bottom:1px solid var(--bdr);margin-top:18px;overflow-x:auto;-webkit-overflow-scrolling:touch}
+nav a{padding:11px 13px;font-family:var(--m);font-size:9.5px;font-weight:500;color:var(--dim);cursor:pointer;border-bottom:2px solid transparent;transition:.12s;white-space:nowrap;text-decoration:none;letter-spacing:.2px}
+nav a:hover{color:var(--ink)}nav a.on{color:var(--rust);border-bottom-color:var(--rust)}
+
+.S{display:none;padding:28px 0 48px}.S.on{display:block}
+
+h2{font-family:var(--head);font-size:21px;font-weight:500;margin-bottom:12px;letter-spacing:-.2px}
+h3{font-size:11px;font-weight:700;color:var(--rust);margin:22px 0 7px;letter-spacing:.6px;text-transform:uppercase}
+h4{font-size:12.5px;font-weight:600;margin-bottom:3px}
+p{font-size:12.5px;margin-bottom:10px}
+li{font-size:12px;margin-bottom:3px}ul{margin:3px 0 10px 16px}
+
+.c{background:#12141a;border-radius:4px;margin:10px 0;overflow-x:auto}
+.c .h{display:inline-block;padding:5px 11px;background:#1c1f28;color:#6e7681;font-family:var(--m);font-size:9px;border-radius:4px 4px 0 0;border-bottom:1px solid #2d3139;letter-spacing:.3px}
+.c pre{padding:11px 13px;font-family:var(--m);font-size:10.5px;line-height:1.7;color:#c9d1d9;white-space:pre;overflow-x:auto}
+.kw{color:#ff7b72}.str{color:#a5d6ff}.cmt{color:#6e7681;font-style:italic}.fn{color:#d2a8ff}.num{color:#79c0ff}.key{color:#7ee787}.val{color:#ffa657}
+
+.n{border-radius:4px;padding:10px 13px;margin:12px 0;font-size:11.5px;line-height:1.6}
+.n.ok{background:var(--pine2);border-left:3px solid var(--pine);color:var(--pine)}
+.n.w{background:var(--clay2);border-left:3px solid var(--clay);color:var(--clay)}
+.n.i{background:var(--indigo2);border-left:3px solid var(--indigo);color:var(--indigo)}
+.n.id{background:var(--plum2);border-left:3px solid var(--plum);color:var(--plum)}
+.n strong{display:block;margin-bottom:2px}
+
+table{width:100%;border-collapse:collapse;margin:10px 0;font-size:11px}
+th{text-align:left;padding:6px 9px;background:var(--s2);font-family:var(--m);font-size:9.5px;font-weight:600;color:var(--rust);border:1px solid var(--bdr);letter-spacing:.3px}
+td{padding:6px 9px;border:1px solid var(--bdr)}
+td code,p code,li code{background:var(--s2);padding:1px 4px;border-radius:2px;font-family:var(--m);font-size:10px}
+
+.tree{font-family:var(--m);font-size:10px;line-height:1.8;color:var(--dim);background:var(--s);border:1px solid var(--bdr);border-radius:4px;padding:11px 13px;margin:10px 0;overflow-x:auto;white-space:pre}
+.tree .d{color:var(--rust)}.tree .f{color:var(--ink)}.tree .x{color:var(--dim);font-style:italic}
+
+.vs{display:grid;grid-template-columns:1fr 1fr;gap:0;margin:12px 0;border:1px solid var(--bdr);border-radius:4px;overflow:hidden}
+.vs>div{padding:10px}.vs>div:first-child{background:#faf9f6;border-right:1px solid var(--bdr)}
+.vs>div h4{font-family:var(--m);font-size:9.5px;margin-bottom:5px;color:var(--dim);letter-spacing:.3px}
+@media(max-width:640px){.vs{grid-template-columns:1fr}.vs>div:first-child{border-right:none;border-bottom:1px solid var(--bdr)}}
+
+.done{background:var(--s);border:1px solid var(--bdr);border-radius:4px;padding:10px 13px;margin:14px 0}
+.done h4{font-family:var(--m);font-size:9.5px;color:var(--pine);margin-bottom:5px;letter-spacing:.3px}
+.done ul{margin:0 0 0 16px}.done li{font-size:11.5px;margin-bottom:2px}
+
+.role{display:inline-block;font-family:var(--m);font-size:8.5px;letter-spacing:.3px;text-transform:uppercase;padding:2px 6px;border-radius:2px;margin-right:4px}
+.r-ne{background:var(--clay2);color:var(--clay)}
+.r-host{background:var(--indigo2);color:var(--indigo)}
+.r-fab{background:var(--plum2);color:var(--plum)}
+.r-net{background:var(--slate2);color:var(--slate)}
+</style>
+</head>
+<body>
+<div class="w">
+
+<header>
+  <div class="ey">plasma platform</div>
+  <h1>Build Plan</h1>
+  <p>Cloud Hypervisor · PetaLinux kernel (Config A + virtio) · kwark + gluon · Atom · Fabric · single-binary CLI. Nine milestones.</p>
+</header>
+
+<nav>
+  <a class="on" onclick="T(0)">Overview</a>
+  <a onclick="T(1)">M1: Boot</a>
+  <a onclick="T(2)">M2: Agent</a>
+  <a onclick="T(3)">M3: Daemon</a>
+  <a onclick="T(4)">M4: Fleet</a>
+  <a onclick="T(5)">M4.6: Snap</a>
+  <a onclick="T(6)">M4.7: Topo</a>
+  <a onclick="T(7)">M5: Images</a>
+  <a onclick="T(8)">M6: Reload</a>
+  <a onclick="T(9)">M7: Fabric</a>
+</nav>
+
+<!-- ═══ OVERVIEW ═══ -->
+<div class="S on" id="s0">
+<h2>Nine milestones</h2>
+
+<table>
+  <tr><th>#</th><th>Milestone</th><th>Delivers</th><th>Effort</th></tr>
+  <tr><td>1</td><td>Boot one VM</td><td>PetaLinux on CH, kwark + gluon loaded, Atom running (co-resident)</td><td>~2d</td></tr>
+  <tr><td>2</td><td>ne-agent</td><td>Guest agent on vsock :9100 — health, exec, cp. No SSH.</td><td>~3d</td></tr>
+  <tr><td>3</td><td>plasma daemon</td><td><code>plasma up</code>, full single-VM CLI</td><td>~4d</td></tr>
+  <tr><td>4</td><td>Fleet</td><td><code>count: 50</code>, sandboxes, <code>plasma fleet status/exec</code></td><td>~3d</td></tr>
+  <tr><td>4.6</td><td>Snapshot / restore</td><td><code>plasma snapshot create/restore</code> — fleet-wide CH-native snapshots</td><td>~2d</td></tr>
+  <tr><td>4.7</td><td>Topology DSL</td><td><code>nodes</code> / <code>pairings</code> / <code>constructs</code> in <code>plasma.yaml</code> — containerlab-influenced</td><td>~4d</td></tr>
+  <tr><td>5</td><td>Image factory</td><td><code>plasma image build defense</code> — per-industry rootfs</td><td>~5d</td></tr>
+  <tr><td>6</td><td>Module reload</td><td><code>plasma module push kwark.ko</code> — fleet-wide in &lt;3s</td><td>~3d</td></tr>
+  <tr><td>7</td><td>Fabric</td><td>Master VM, Fabric Docker image, Fabric ↔ Atom on mgmt plane</td><td>~4d</td></tr>
+</table>
+
+<h3>VM roles</h3>
+<table>
+  <tr><th>Role</th><th>OS</th><th>What it runs</th><th>Count</th></tr>
+  <tr><td><span class="role r-ne">NE</span></td><td>PetaLinux</td><td>kwark + gluon + Atom (always co-resident)</td><td>1–50</td></tr>
+  <tr><td><span class="role r-host">HOST</span></td><td>Alpine</td><td>User workload behind the NE (any application — traffic generator, app server, etc.). No NE components.</td><td>0–N</td></tr>
+  <tr><td><span class="role r-fab">FABRIC</span></td><td>Alpine / Ubuntu</td><td>NE stack co-located (kwark + gluon + Atom — rebuilt for this kernel) <strong>plus</strong> Docker running the Fabric app (Next.js UI + Go backend). Not paired with a separate NE.</td><td>1</td></tr>
+</table>
+
+<h3>Not VMs — host-side constructs</h3>
+<p>Routers and NATs are network namespaces with iptables rules on the host, not full VMs. They're lightweight network constructs that endpoints connect through.</p>
+
+<div class="n i">
+  <strong>Topology YAML — see M4.7</strong>
+  Host VMs and their NE pairings ("which NE protects which host") are expressed in the topology section of <code>plasma.yaml</code> — full schema in M4.7. M1–M4 examples are NE-only because the topology DSL doesn't land until M4.7. Atom is <strong>always co-resident in the NE</strong>; the split-host variant (Atom on a host VM, <code>k-eth</code> driver on the NE) is deferred — not in this plan.
+</div>
+
+<div class="n id">
+  <strong>Fabric exception</strong>
+  Every other VM follows the host-NE pairing rule. The Fabric VM is the one exception — it carries the NE stack (Atom + kwark + gluon) <em>inside</em> the Fabric VM itself, so it doesn't need a separate NE in front. The Fabric Go backend talks to the Plasma daemon's REST API to drive fleet operations from the UI.
+</div>
+
+<h3>Three network planes</h3>
+<table>
+  <tr><th>Plane</th><th>Purpose</th><th>Participants</th></tr>
+  <tr><td><strong>Data</strong></td><td>Protected endpoint traffic. NE is a <strong>transparent bump-in-the-wire</strong> — sits between the protected endpoint and the network. Endpoints don't address the NE; its presence is invisible to them.</td><td>Host VMs, routers, NATs ↔ NE VMs</td></tr>
+  <tr><td><strong>Control</strong></td><td>Atom ↔ Atom signaling between NEs (peer state, session negotiation). Dedicated port.</td><td>NE ↔ NE</td></tr>
+  <tr><td><strong>Management</strong></td><td>Fabric ↔ Atom on each NE. Out-of-band port for config, monitoring.</td><td>Fabric VM ↔ all NE VMs</td></tr>
+</table>
+
+<h3>NE internals</h3>
+<div class="tree"><span class="x">PetaLinux guest (NE VM)</span>
+│
+├─ <span class="f">kwark.ko</span>    <span class="x">driver layer, mode=sim</span>
+│     │ direct kernel API (no SPI in sim)
+│     ▼
+├─ <span class="f">gluon.ko</span>    <span class="x">hardware simulation layer</span>
+│
+├─ <span class="f">Atom</span>         <span class="x">Go daemon — talks to kwark via gennetlink</span>
+│
+└─ <span class="f">ne-agent</span>    <span class="x">vsock :9100 — health, exec, cp</span></div>
+
+<h3>Resource math — 96 GB host</h3>
+<table>
+  <tr><th>Component</th><th>Per VM</th><th>× 50 NEs</th></tr>
+  <tr><td>Guest RAM</td><td>1.5 GB</td><td>75 GB</td></tr>
+  <tr><td>CH process</td><td>~10 MB</td><td>~500 MB</td></tr>
+  <tr><td>Host + bridges + Fabric VM</td><td>—</td><td>~6 GB</td></tr>
+  <tr><td><strong>Total</strong></td><td></td><td><strong>~82 GB</strong> ✓</td></tr>
+</table>
+</div>
+
+<!-- ═══ M1 ═══ -->
+<div class="S" id="s1">
+<h2>M1 — Boot one NE VM</h2>
+<p>Co-resident mode: Atom, kwark, and gluon all inside one PetaLinux VM.</p>
+
+<h3>Step 1: Rebuild PetaLinux kernel with virtio</h3>
+<div class="c"><div class="h">append to defconfig</div><pre>CONFIG_VIRTIO=y
+CONFIG_VIRTIO_BLK=y
+CONFIG_VIRTIO_NET=y
+CONFIG_VIRTIO_PCI=y
+CONFIG_VIRTIO_CONSOLE=y
+CONFIG_VIRTIO_VSOCK=y
+CONFIG_VHOST_VSOCK=y
+CONFIG_HW_RANDOM_VIRTIO=y
+CONFIG_PCI=y
+CONFIG_PCI_HOST_GENERIC=y
+CONFIG_SERIAL_AMBA_PL011=y
+CONFIG_SERIAL_AMBA_PL011_CONSOLE=y</pre></div>
+
+<div class="c"><div class="h">build</div><pre>cd &lt;petalinux-kernel-source&gt;
+make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- olddefconfig
+make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- -j$(nproc) Image
+
+mkdir -p /opt/plasma/petalinux
+cp arch/arm64/boot/Image /opt/plasma/petalinux/Image</pre></div>
+
+<h3>Step 2: Extract rootfs from WIC</h3>
+<div class="c"><div class="h">bash</div><pre>WIC=<span class="str">"petalinux-sdimage.wic"</span>
+ROOTFS=<span class="str">"/opt/plasma/images/rootfs-base.raw"</span>
+
+OFFSET=$(fdisk -l $WIC | awk <span class="str">'/Linux filesystem/{print $2}'</span>)
+SIZE=$(fdisk -l $WIC | awk <span class="str">'/Linux filesystem/{print $4}'</span>)
+
+mkdir -p /opt/plasma/images
+dd if=$WIC of=$ROOTFS bs=512 skip=$OFFSET count=$SIZE
+truncate -s 4G $ROOTFS
+e2fsck -f $ROOTFS
+resize2fs $ROOTFS</pre></div>
+
+<h3>Step 3: Launch</h3>
+<div class="c"><div class="h">bash</div><pre>cloud-hypervisor \
+  --kernel /opt/plasma/petalinux/Image \
+  --cmdline <span class="str">"console=ttyAMA0 root=/dev/vda rw"</span> \
+  --disk path=/opt/plasma/images/rootfs-base.raw \
+  --cpus boot=4 \
+  --memory size=2G \
+  --serial tty \
+  --console off</pre></div>
+
+<h3>Step 4: Verify</h3>
+<div class="c"><div class="h">at the serial console</div><pre>lsmod | grep kwark              <span class="cmt"># kwark loaded?</span>
+lsmod | grep gluon              <span class="cmt"># gluon loaded?</span>
+systemctl status atom            <span class="cmt"># Atom running?</span>
+dmesg | grep gennetlink          <span class="cmt"># gennetlink family registered?</span></pre></div>
+
+<div class="n w">
+  <strong>x86_64 host?</strong>
+  Cloud Hypervisor needs KVM — no software emulation. Confirm your host arch before M1. If x86_64, rebuild kernel + modules with <code>ARCH=x86_64</code>, Go binaries with <code>GOARCH=amd64</code>. All logic is identical.
+</div>
+
+<div class="done">
+  <h4>✓ DONE WHEN</h4>
+  <ul>
+    <li>PetaLinux boots in ~200ms</li>
+    <li>kwark + gluon loaded, kwark↔gluon binding established</li>
+    <li>Atom running, gennetlink connected to kwark</li>
+  </ul>
+</div>
+</div>
+
+<!-- ═══ M2 ═══ -->
+<div class="S" id="s2">
+<h2>M2 — ne-agent</h2>
+<p>Go binary inside the guest. vsock port 9100. Three ops: health, exec, cp.</p>
+
+<div class="c"><div class="h">build + inject</div><pre><span class="cmt"># Build (arm64 — swap to amd64 if host is x86_64)</span>
+CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -o ne-agent -ldflags=<span class="str">"-s -w"</span> ./cmd/ne-agent
+
+<span class="cmt"># Mount rootfs, inject, enable systemd service</span>
+sudo mount -o loop /opt/plasma/images/rootfs-base.raw /tmp/rootfs
+sudo mkdir -p /tmp/rootfs/opt/ne/bin
+sudo cp ne-agent /tmp/rootfs/opt/ne/bin/
+sudo chmod +x /tmp/rootfs/opt/ne/bin/ne-agent
+
+sudo tee /tmp/rootfs/etc/systemd/system/ne-agent.service &lt;&lt; <span class="str">'EOF'</span>
+[Unit]
+Description=NE Agent
+After=network.target
+[Service]
+ExecStart=/opt/ne/bin/ne-agent
+Restart=always
+[Install]
+WantedBy=multi-user.target
+<span class="str">EOF</span>
+sudo chroot /tmp/rootfs systemctl enable ne-agent
+sudo umount /tmp/rootfs</pre></div>
+
+<h3>Health response includes kwark + gluon</h3>
+<div class="c"><div class="h">JSON</div><pre>{
+  <span class="str">"hostname"</span>: <span class="str">"ne-00"</span>,
+  <span class="str">"modules"</span>: [
+    {<span class="str">"name"</span>:<span class="str">"kwark"</span>, <span class="str">"loaded"</span>:true, <span class="str">"mode"</span>:<span class="str">"sim"</span>},
+    {<span class="str">"name"</span>:<span class="str">"gluon"</span>, <span class="str">"loaded"</span>:true}
+  ],
+  <span class="str">"kwark_gluon_bound"</span>: true,
+  <span class="str">"atom"</span>: {<span class="str">"running"</span>:true, <span class="str">"pid"</span>:<span class="num">142</span>, <span class="str">"genl_connected"</span>:true},
+  <span class="str">"uptime"</span>: <span class="num">272</span>
+}</pre></div>
+
+<div class="done">
+  <h4>✓ DONE WHEN</h4>
+  <ul>
+    <li><code>{"op":"health"}</code> returns kwark, gluon, and Atom status</li>
+    <li><code>{"op":"exec","cmd":"lsmod"}</code> streams output</li>
+  </ul>
+</div>
+</div>
+
+<!-- ═══ M3 ═══ -->
+<div class="S" id="s3">
+<h2>M3 — plasma daemon (single VM)</h2>
+
+<h3>CLI commands</h3>
+<div class="c"><div class="h">single-VM operations</div><pre>plasma up ./plasma.yaml
+plasma vm list
+plasma vm shell ne-00
+plasma vm exec ne-00 -- lsmod
+plasma vm cp ./f ne-00:/p
+plasma vm cp ne-00:/p ./f
+plasma vm logs ne-00
+plasma vm health ne-00</pre></div>
+
+<h3>plasma.yaml for M3</h3>
+<div class="c"><div class="h">plasma.yaml</div><pre><span class="key">config</span>:
+  <span class="key">kernel</span>: <span class="str">"/opt/plasma/petalinux/Image"</span>
+  <span class="key">rootfs</span>: <span class="str">"/opt/plasma/images/rootfs-base.raw"</span>
+
+  <span class="key">host_groups</span>:
+    - <span class="key">name</span>: <span class="val">ne</span>
+      <span class="key">role</span>: <span class="val">ne</span>
+      <span class="key">count</span>: <span class="num">1</span>
+      <span class="key">vcpu</span>: <span class="num">4</span>
+      <span class="key">ram_mb</span>: <span class="num">1536</span>
+      <span class="key">ne</span>:
+        <span class="key">modules</span>: [<span class="str">"kwark.ko"</span>, <span class="str">"gluon.ko"</span>]
+        <span class="key">module_params</span>: {<span class="key">kwark</span>: <span class="str">"mode=sim"</span>}
+        <span class="key">atom</span>: <span class="val">co-resident</span>    <span class="cmt"># Atom inside this VM</span>
+
+  <span class="key">api</span>:
+    <span class="key">socket</span>: <span class="str">"/var/run/plasma.sock"</span>
+    <span class="key">port</span>: <span class="num">8080</span></pre></div>
+
+<h3>Startup sequence</h3>
+<div class="c"><div class="h">what plasma up does</div><pre><span class="cmt">1. Parse YAML, verify Image + rootfs</span>
+<span class="cmt">2. Create bridges (data + control + mgmt)</span>
+<span class="cmt">3. Create TAP interfaces, attach to bridges</span>
+<span class="cmt">4. Create QCOW2 overlay</span>
+<span class="cmt">5. Launch cloud-hypervisor</span>
+<span class="cmt">6. Poll ne-agent vsock until ready</span>
+<span class="cmt">7. Open Unix socket + REST API</span>
+<span class="cmt">8. Log: "plasma: 1 VM running"</span></pre></div>
+
+<div class="done">
+  <h4>✓ DONE WHEN</h4>
+  <ul>
+    <li><code>sudo plasma up ./plasma.yaml</code> boots one NE VM</li>
+    <li><code>plasma vm list</code> → <code>ne-00 Running ne</code></li>
+    <li><code>plasma vm health ne-00</code> → kwark, gluon loaded, Atom connected</li>
+    <li><code>plasma vm shell ne-00</code> → interactive shell</li>
+    <li><code>plasma down</code> → clean shutdown</li>
+  </ul>
+</div>
+</div>
+
+<!-- ═══ M4 ═══ -->
+<div class="S" id="s4">
+<h2>M4 — Fleet scale-out</h2>
+<p><code>count: 50</code>, sandbox group, fleet operations.</p>
+
+<div class="c"><div class="h">CLI</div><pre>plasma fleet status
+<span class="cmt">GROUP     ROLE     COUNT   HEALTHY   ATOM    KWARK   GLUON</span>
+<span class="cmt">ne        ne       50      50        50/50   50/50   50/50</span>
+<span class="cmt">sandbox   ne       0       -         -       -       -</span>
+
+plasma fleet exec -- uname -r
+<span class="cmt">ne-00: 6.12.0-petalinux ...</span>
+
+plasma vm launch sandbox
+<span class="cmt">sandbox-1  Booting  sandbox</span>
+
+plasma vm delete sandbox-1</pre></div>
+
+<div class="c"><div class="h">plasma.yaml</div><pre><span class="key">host_groups</span>:
+  - <span class="key">name</span>: <span class="val">ne</span>
+    <span class="key">role</span>: <span class="val">ne</span>
+    <span class="key">count</span>: <span class="num">50</span>
+    <span class="key">vcpu</span>: <span class="num">4</span>
+    <span class="key">ram_mb</span>: <span class="num">1536</span>
+    <span class="key">ne</span>:
+      <span class="key">modules</span>: [<span class="str">"kwark.ko"</span>, <span class="str">"gluon.ko"</span>]
+      <span class="key">module_params</span>: {<span class="key">kwark</span>: <span class="str">"mode=sim"</span>}
+      <span class="key">atom</span>: <span class="val">co-resident</span>
+
+  - <span class="key">name</span>: <span class="val">sandbox</span>
+    <span class="key">role</span>: <span class="val">ne</span>
+    <span class="key">count</span>: <span class="num">0</span>
+    <span class="key">vcpu</span>: <span class="num">4</span>
+    <span class="key">ram_mb</span>: <span class="num">1536</span></pre></div>
+
+<div class="done">
+  <h4>✓ DONE WHEN</h4>
+  <ul>
+    <li>50 NE VMs boot, <code>plasma fleet status</code> shows 50/50 healthy</li>
+    <li><code>plasma vm launch sandbox</code> + <code>plasma vm delete</code> works</li>
+  </ul>
+</div>
+</div>
+
+<!-- ═══ M4.6 ═══ -->
+<div class="S" id="s6">
+<h2>M4.6 — Snapshot / restore</h2>
+<p>Cloud Hypervisor supports VM snapshots natively. Plasma exposes them as fleet-aware operations — snapshot a 50-VM baseline, run destructive tests, restore in seconds. Restore beats reboot by ~10×.</p>
+
+<div class="c"><div class="h">CLI</div><pre>plasma snapshot create baseline
+<span class="cmt">[+] Snapshotting 50 VMs ...</span>
+<span class="cmt">[+] Done in 4.2s. Snapshot: baseline (3.4 GB)</span>
+
+plasma snapshot list
+<span class="cmt">NAME      VMS  CREATED              SIZE</span>
+<span class="cmt">baseline  50   2026-04-27 14:02:11  3.4 GB</span>
+
+plasma snapshot restore baseline
+<span class="cmt">[+] Restored 50 VMs in 1.6s</span>
+
+<span class="cmt"># Per-VM snapshot</span>
+plasma snapshot create one-vm --vm ne-00
+
+plasma snapshot delete baseline</pre></div>
+
+<h3>Why this matters</h3>
+<ul>
+  <li>Iterating on M5 image profiles or M6 module reloads gets ~10× faster — restore beats reboot.</li>
+  <li>Captures the exact state Atom + kwark + gluon left behind, including running gennetlink sessions.</li>
+  <li>Test runs become deterministic — same baseline, same starting point, every time.</li>
+</ul>
+
+<div class="n i">
+  <strong>Storage layout</strong>
+  Each snapshot is a CH memory dump + disk overlay diff. Per-VM ~50–100 MB. A 50-VM snapshot is ~3–5 GB. Persisted to <code>/opt/plasma/snapshots/&lt;name&gt;/</code> so they survive <code>plasma down</code> + <code>plasma up</code>.
+</div>
+
+<div class="done">
+  <h4>✓ DONE WHEN</h4>
+  <ul>
+    <li><code>plasma snapshot create baseline</code> on a 50-VM fleet completes</li>
+    <li><code>plasma snapshot restore baseline</code> brings everything back in &lt;3s</li>
+    <li>Snapshots survive <code>plasma down</code> / <code>plasma up</code></li>
+    <li>Per-VM and whole-fleet snapshots both work</li>
+  </ul>
+</div>
+</div>
+
+<!-- ═══ M4.7 ═══ -->
+<div class="S" id="s6b">
+<h2>M4.7 — Topology DSL</h2>
+<p><code>plasma.yaml</code> grows top-level blocks for declarative topology — shape borrowed from containerlab, adapted to our three-plane model and the NE bump-in-the-wire. Defaults handle the common case so most setups never write a <code>links</code> entry.</p>
+
+<h3>Top-level shape</h3>
+<div class="c"><div class="h">plasma.yaml</div><pre><span class="key">name</span>: <span class="val">defense-mesh</span>
+
+<span class="cmt"># Auto-managed bridges, one per plane.</span>
+<span class="key">planes</span>:
+  <span class="key">data</span>:    { <span class="key">bridge</span>: <span class="val">br-data</span>, <span class="key">cidr</span>: <span class="str">"10.0.0.0/16"</span>   }
+  <span class="key">control</span>: { <span class="key">bridge</span>: <span class="val">br-ctrl</span>, <span class="key">cidr</span>: <span class="str">"10.1.0.0/16"</span>   }
+  <span class="key">mgmt</span>:    { <span class="key">bridge</span>: <span class="val">br-mgmt</span>, <span class="key">cidr</span>: <span class="str">"172.16.0.0/24"</span> }
+
+<span class="cmt"># VMs by role. 'count' expands fleets (ne-00 ... ne-49).</span>
+<span class="key">nodes</span>:
+  <span class="key">fabric-00</span>:
+    <span class="key">role</span>: <span class="val">fabric</span>
+    <span class="key">image</span>: <span class="str">"/opt/plasma/images/fabric-master.raw"</span>
+    <span class="key">resources</span>: { <span class="key">vcpu</span>: <span class="num">4</span>, <span class="key">ram_mb</span>: <span class="num">4096</span> }
+    <span class="key">ne</span>: { <span class="key">modules</span>: [<span class="str">"kwark.ko"</span>, <span class="str">"gluon.ko"</span>], <span class="key">atom</span>: <span class="val">co-resident</span> }
+    <span class="key">fabric</span>: { <span class="key">docker_image</span>: <span class="str">"..."</span>, <span class="key">ui_port</span>: <span class="num">3000</span>, <span class="key">api_port</span>: <span class="num">8443</span> }
+
+  <span class="key">ne</span>:
+    <span class="key">role</span>: <span class="val">ne</span>
+    <span class="key">count</span>: <span class="num">50</span>
+    <span class="key">image</span>: <span class="str">"/opt/plasma/factory/output/ne-defense.raw"</span>
+    <span class="key">resources</span>: { <span class="key">vcpu</span>: <span class="num">4</span>, <span class="key">ram_mb</span>: <span class="num">1536</span> }
+    <span class="key">ne</span>: { <span class="key">modules</span>: [<span class="str">"kwark.ko"</span>, <span class="str">"gluon.ko"</span>], <span class="key">atom</span>: <span class="val">co-resident</span> }
+
+  <span class="key">host</span>:
+    <span class="key">role</span>: <span class="val">host</span>
+    <span class="key">count</span>: <span class="num">50</span>
+    <span class="key">image</span>: <span class="str">"/opt/plasma/images/alpine-host.raw"</span>
+    <span class="key">resources</span>: { <span class="key">vcpu</span>: <span class="num">2</span>, <span class="key">ram_mb</span>: <span class="num">512</span> }
+    <span class="key">workload</span>: { <span class="key">cmd</span>: <span class="str">"iperf3 -s"</span> }    <span class="cmt"># optional</span>
+
+<span class="cmt"># Host-side network constructs (NOT VMs — namespaces + iptables).</span>
+<span class="key">constructs</span>:
+  <span class="key">edge-router</span>:  { <span class="key">kind</span>: <span class="val">router</span>, <span class="key">interfaces</span>: [<span class="val">lan</span>, <span class="val">wan</span>] }
+  <span class="key">internet-nat</span>: { <span class="key">kind</span>: <span class="val">nat</span>,    <span class="key">upstream</span>: <span class="str">"10.0.0.0/24"</span> }
+
+<span class="cmt"># NE -> endpoint pairing. Defines who sits transparently in front of whom.</span>
+<span class="key">pairings</span>:
+  - { <span class="key">ne</span>: <span class="str">"ne[*]"</span>, <span class="key">endpoint</span>: <span class="str">"host[*]"</span>, <span class="key">scheme</span>: <span class="val">zip</span> }
+  <span class="cmt"># or one-off: { ne: ne-00, endpoint: edge-router }</span>
+
+<span class="cmt"># Custom links override defaults. Most setups leave this empty.</span>
+<span class="key">links</span>: []</pre></div>
+
+<h3>What plasma up does on parse</h3>
+<div class="c"><div class="h">startup pipeline</div><pre><span class="cmt">1. Validate node refs in pairings, expand 'count' into named instances</span>
+<span class="cmt">2. Create plane bridges (br-data, br-ctrl, br-mgmt) with CIDR allocation</span>
+<span class="cmt">3. Create router/NAT namespaces from constructs (iptables rules, routes)</span>
+<span class="cmt">4. For each pairing, wire NE's data-in iface to the paired endpoint</span>
+<span class="cmt">5. Auto-attach each VM's plane interfaces to plane bridges</span>
+<span class="cmt">6. Apply explicit 'links' overrides last</span>
+<span class="cmt">7. Launch VMs in dependency order (fabric & NEs before hosts)</span></pre></div>
+
+<h3>Containerlab influence — what we kept and what we changed</h3>
+<table>
+  <tr><th>From containerlab</th><th>Plasma adaptation</th></tr>
+  <tr><td><code>nodes</code> / <code>links</code> / <code>endpoints</code></td><td>Same shape</td></tr>
+  <tr><td><code>kind</code> discriminator</td><td>Renamed to <code>role</code> (fabric/ne/host)</td></tr>
+  <tr><td><code>image</code>, <code>resources</code> per node</td><td>Same</td></tr>
+  <tr><td>Container-only by default; VMs via vrnetlab+QEMU</td><td>Direct Cloud Hypervisor — keeps boot speed and density</td></tr>
+  <tr><td>No native pairing concept (every link is explicit)</td><td>New <code>pairings</code> block — declarative NE↔endpoint binding with <code>scheme: zip</code> for fleets</td></tr>
+  <tr><td>Routers/NATs as container nodes</td><td>New <code>constructs</code> block — host namespaces, lighter than VMs</td></tr>
+  <tr><td>No plane abstraction</td><td>New <code>planes</code> block — auto-attach to data/ctrl/mgmt bridges, no <code>links</code> needed for the common case</td></tr>
+</table>
+
+<div class="n i">
+  <strong>Defaults handle 80% of cases</strong>
+  50 NEs + 50 hosts + a one-line <code>pairings</code> entry — done. Reach for <code>links</code> only for non-default arrangements (star, segmented mesh, multi-bridge data plane).
+</div>
+
+<div class="done">
+  <h4>✓ DONE WHEN</h4>
+  <ul>
+    <li><code>plasma.yaml</code> validates and parses the new top-level keys (<code>planes</code>, <code>nodes</code>, <code>constructs</code>, <code>pairings</code>, <code>links</code>)</li>
+    <li>Default plane bridges + CIDR allocation come up without any <code>links</code> entries</li>
+    <li>NE↔host pairing wires the NE's data-in interface to the host's data interface (transparent bump)</li>
+    <li><code>count</code> expands fleets correctly, names follow <code>&lt;group&gt;-NN</code></li>
+    <li>Routers/NATs come up as namespaces with iptables rules — endpoints behind them route correctly</li>
+    <li>Existing M1–M4.6 YAML still works (backwards-compatible with the simpler <code>host_groups</code> form, or auto-migrated)</li>
+  </ul>
+</div>
+</div>
+
+<!-- ═══ M5 ═══ -->
+<div class="S" id="s7">
+<h2>M5 — Image factory</h2>
+
+<div class="c"><div class="h">CLI</div><pre>plasma image build defense
+<span class="cmt">[+] Built: /opt/plasma/factory/output/ne-defense.raw</span>
+
+plasma image list
+<span class="cmt">IMAGE              SIZE    PROFILE     PACKAGES</span>
+<span class="cmt">ne-defense.raw     1.2G    defense     +3 -2</span>
+<span class="cmt">ne-telecom.raw     1.1G    telecom     +2 -0</span></pre></div>
+
+<h3>Profile structure</h3>
+<div class="tree"><span class="d">/opt/plasma/factory/profiles/</span>
+├── <span class="d">defense/</span>
+│   ├── <span class="f">profile.yaml</span>       <span class="x"># packages, hardening, overlay</span>
+│   ├── <span class="d">packages/</span>          <span class="x"># .deb/.rpm to inject</span>
+│   ├── <span class="d">atom-config/</span>       <span class="x"># Atom YAML</span>
+│   ├── <span class="d">overlay/</span>           <span class="x"># bitstream + dtbo + shell.json</span>
+│   └── <span class="d">scripts/</span>           <span class="x"># post-install hooks</span>
+├── <span class="d">telecom/</span>
+├── <span class="d">industrial/</span>
+└── <span class="d">healthcare/</span></div>
+
+<h3>Mixed fleet — interop testing</h3>
+<div class="c"><div class="h">plasma.yaml</div><pre><span class="key">host_groups</span>:
+  - <span class="key">name</span>: <span class="val">defense</span>
+    <span class="key">role</span>: <span class="val">ne</span>
+    <span class="key">count</span>: <span class="num">10</span>
+    <span class="key">rootfs</span>: <span class="str">"/opt/plasma/factory/output/ne-defense.raw"</span>
+    <span class="cmt"># ...</span>
+  - <span class="key">name</span>: <span class="val">telecom</span>
+    <span class="key">role</span>: <span class="val">ne</span>
+    <span class="key">count</span>: <span class="num">5</span>
+    <span class="key">rootfs</span>: <span class="str">"/opt/plasma/factory/output/ne-telecom.raw"</span>
+    <span class="cmt"># ...</span></pre></div>
+
+<div class="done">
+  <h4>✓ DONE WHEN</h4>
+  <ul>
+    <li><code>plasma image build defense</code> produces a bootable image</li>
+    <li>Different host groups run different industry images</li>
+    <li>Defense NE can establish sessions with telecom NE on same bridge</li>
+  </ul>
+</div>
+</div>
+
+<!-- ═══ M6 ═══ -->
+<div class="S" id="s8">
+<h2>M6 — Module hot-reload</h2>
+
+<div class="c"><div class="h">CLI</div><pre><span class="cmt"># Full fleet</span>
+plasma module push kwark.ko --restart-atom
+<span class="cmt">ne-00: ✓ 58ms ... ne-49: ✓ 55ms</span>
+<span class="cmt">Summary: 50/50 success, 1.8s</span>
+
+<span class="cmt"># Single target</span>
+plasma module push kwark.ko --target ne-00 --restart-atom
+
+<span class="cmt"># Canary → fleet</span>
+plasma module push kwark.ko --target ne-00,ne-01,ne-02 --restart-atom
+plasma vm health ne-00   <span class="cmt"># check kwark_gluon_bound</span>
+plasma module push kwark.ko --restart-atom</pre></div>
+
+<h3>Reload sequence inside guest</h3>
+<div class="c"><div class="h">ne-agent handles this</div><pre><span class="cmt">1. Stop Atom (holds gennetlink socket)</span>
+<span class="cmt">2. rmmod kwark         (unbinds from gluon)</span>
+<span class="cmt">3. Write new kwark.ko</span>
+<span class="cmt">4. insmod kwark.ko mode=sim</span>
+<span class="cmt">5. Verify kwark↔gluon binding re-established</span>
+<span class="cmt">6. Restart Atom</span>
+<span class="cmt">7. Verify gennetlink connected</span></pre></div>
+
+<div class="n w">
+  <strong>gluon stays loaded</strong>
+  Only kwark is reloaded. gluon remains in the kernel. kwark re-binds to gluon on insmod via the direct kernel API. If gluon also changes, reload both: rmmod kwark → rmmod gluon → insmod gluon → insmod kwark.
+</div>
+
+<h3>Makefile</h3>
+<div class="c"><div class="h">Makefile</div><pre>KDIR ?= /opt/plasma/petalinux/kernel-source
+
+<span class="key">build</span>:
+	make -C $(KDIR) M=$(PWD) ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- modules
+
+<span class="key">reload</span>: build
+	plasma module push kwark.ko --restart-atom
+
+<span class="key">reload-one</span>: build
+	plasma module push kwark.ko --target ne-00 --restart-atom
+
+<span class="key">test</span>: reload-one
+	plasma vm exec ne-00 -- /opt/ne/bin/ne-test --genl-smoke
+
+<span class="key">logs</span>:
+	plasma vm logs ne-00 --follow</pre></div>
+
+<div class="done">
+  <h4>✓ DONE WHEN</h4>
+  <ul>
+    <li><code>make reload</code> pushes kwark to all VMs in &lt;3s</li>
+    <li>kwark↔gluon binding re-establishes</li>
+    <li>Atom reconnects via gennetlink</li>
+  </ul>
+</div>
+</div>
+
+<!-- ═══ M7 ═══ -->
+<div class="S" id="s9">
+<h2>M7 — Fabric</h2>
+<p>An Alpine or Ubuntu VM that <strong>co-locates the NE stack (Atom + kwark + gluon) with the Fabric application</strong>. Docker runs on top to host the Fabric Next.js UI + Go backend. The Fabric backend drives the fleet by calling the Plasma daemon's REST API; operators interact via the UI.</p>
+
+<div class="n w">
+  <strong>Two kernels, two module builds</strong>
+  NE VMs run PetaLinux; the Fabric VM runs Alpine/Ubuntu. <code>kwark</code> and <code>gluon</code> are kernel-version-specific, so they're built twice — once against the PetaLinux kernel (drops onto NE VMs) and once against the Alpine/Ubuntu kernel (drops onto the Fabric VM). Atom is userspace and ships unchanged.
+</div>
+
+<h3>What Fabric does</h3>
+<ul>
+  <li>UI for operators to configure, connect to, and monitor the NE fleet</li>
+  <li>Pushes policies and crypto config to each NE's Atom</li>
+  <li>Aggregates health, session state, and telemetry from every Atom</li>
+  <li>Orchestrates rekey, firmware updates, fleet-wide operations</li>
+  <li>Go backend → Plasma REST API for VM-level operations (start/stop/snapshot/etc.)</li>
+</ul>
+
+<div class="n i">
+  <strong>Why the NE stack on Fabric?</strong>
+  Fabric needs the same crypto stack as a regular NE so it can speak peer-to-peer with the fleet. Co-locating it on the Fabric VM (instead of pairing Fabric with a separate NE) keeps the topology simpler. This is the only VM that breaks the host-NE pairing rule.
+</div>
+
+<h3>YAML</h3>
+<div class="c"><div class="h">plasma.yaml — with Fabric</div><pre><span class="key">host_groups</span>:
+  <span class="cmt"># Fabric master — NE stack + Docker + Fabric app, all in one VM</span>
+  - <span class="key">name</span>: <span class="val">fabric</span>
+    <span class="key">role</span>: <span class="val">fabric</span>
+    <span class="key">count</span>: <span class="num">1</span>
+    <span class="key">vcpu</span>: <span class="num">4</span>
+    <span class="key">ram_mb</span>: <span class="num">4096</span>
+    <span class="key">image</span>: <span class="str">"/opt/plasma/images/fabric-master.raw"</span>   <span class="cmt"># Alpine/Ubuntu + Docker</span>
+    <span class="key">ne</span>:
+      <span class="key">modules</span>: [<span class="str">"kwark.ko"</span>, <span class="str">"gluon.ko"</span>]
+      <span class="key">module_params</span>: {<span class="key">kwark</span>: <span class="str">"mode=sim"</span>}
+      <span class="key">atom</span>: <span class="val">co-resident</span>
+    <span class="key">fabric</span>:
+      <span class="key">docker_image</span>: <span class="str">"ghcr.io/your-org/fabric:latest"</span>
+      <span class="key">ui_port</span>: <span class="num">3000</span>
+      <span class="key">api_port</span>: <span class="num">8443</span>
+      <span class="key">plasma_api</span>: <span class="str">"http://&lt;host&gt;:8080"</span>          <span class="cmt"># Plasma daemon REST</span>
+
+  <span class="cmt"># NE fleet</span>
+  - <span class="key">name</span>: <span class="val">ne</span>
+    <span class="key">role</span>: <span class="val">ne</span>
+    <span class="key">count</span>: <span class="num">20</span>
+    <span class="key">vcpu</span>: <span class="num">4</span>
+    <span class="key">ram_mb</span>: <span class="num">1536</span>
+    <span class="key">ne</span>:
+      <span class="key">modules</span>: [<span class="str">"kwark.ko"</span>, <span class="str">"gluon.ko"</span>]
+      <span class="key">module_params</span>: {<span class="key">kwark</span>: <span class="str">"mode=sim"</span>}
+      <span class="key">atom</span>: <span class="val">co-resident</span></pre></div>
+
+<h3>Networking</h3>
+<p>The Fabric VM has its own NE stack, so it participates in <strong>all three planes</strong>: data (encrypted ops traffic to fleet NEs), control (Atom ↔ Atom session negotiation), and management (the Fabric app's UI/API). The Fabric backend additionally talks to the Plasma daemon REST API on the host to drive VM-level operations (start/stop/snapshot/etc.) — that's a side channel, not on any of the NE planes.</p>
+
+<h3>Verification</h3>
+<div class="c"><div class="h">bash</div><pre>sudo plasma up ./plasma.yaml
+
+plasma fleet status
+<span class="cmt">GROUP    ROLE     COUNT   HEALTHY   ATOM    KWARK   GLUON</span>
+<span class="cmt">fabric   fabric   1       1         1/1     1/1     1/1</span>
+<span class="cmt">ne       ne       20      20        20/20   20/20   20/20</span>
+
+<span class="cmt"># Fabric UI accessible</span>
+plasma vm exec fabric-00 -- curl -s http://localhost:3000/api/health
+<span class="cmt">{"status":"ok","ne_count":20}</span>
+
+<span class="cmt"># Fabric sees all NEs</span>
+plasma vm exec fabric-00 -- curl -s http://localhost:8443/api/fleet
+<span class="cmt">[{"ne_id":"ne-00","enrolled":true}, ...]</span></pre></div>
+
+<div class="done">
+  <h4>✓ PLATFORM COMPLETE</h4>
+  <ul>
+    <li>Fabric master VM running Docker image, UI on :3000</li>
+    <li>Fabric ↔ Atom connectivity over management plane</li>
+    <li>Fleet enrollment, config push, monitoring — all working</li>
+    <li>No production-side stubs (KMS/SIEM) — Fabric IS the control surface</li>
+  </ul>
+</div>
+</div>
+
+</div>
+<script>function T(i){document.querySelectorAll('nav a').forEach((t,j)=>t.classList.toggle('on',j===i));document.querySelectorAll('.S').forEach((p,j)=>p.classList.toggle('on',j===i))}</script>
+</body>
+</html>

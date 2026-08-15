@@ -44,17 +44,21 @@ const (
 )
 
 type VmRecord struct {
-	ID            string    `json:"id"`
-	Group         string    `json:"group"`
-	Status        Status    `json:"status"`
-	PID           int       `json:"pid"`
-	APISocket     string    `json:"api_socket"`
-	ConsoleSocket string    `json:"console_socket"`
-	DiskPath      string    `json:"disk_path"`
-	MAC           string    `json:"mac"`
-	IP            string    `json:"ip"`
-	TapDevice     string    `json:"tap_device"`
-	StartedAt     time.Time `json:"started_at"`
+	ID            string `json:"id"`
+	Group         string `json:"group"`
+	Status        Status `json:"status"`
+	PID           int    `json:"pid"`
+	APISocket     string `json:"api_socket"`
+	ConsoleSocket string `json:"console_socket"`
+	// ConsolePTY is the guest's serial line as a pty (/dev/pts/N). Unlike a
+	// unix socket, a pty can be reopened, so `vm shell` can attach and detach
+	// repeatedly. Empty on VMs launched before this became the default.
+	ConsolePTY string    `json:"console_pty"`
+	DiskPath   string    `json:"disk_path"`
+	MAC        string    `json:"mac"`
+	IP         string    `json:"ip"`
+	TapDevice  string    `json:"tap_device"`
+	StartedAt  time.Time `json:"started_at"`
 }
 
 // ConsoleSocketPath is the per-VM Unix socket that carries the guest's raw

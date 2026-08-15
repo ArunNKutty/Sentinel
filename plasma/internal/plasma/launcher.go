@@ -1,7 +1,11 @@
 package plasma
 
 import (
+	"context"
+	"encoding/json"
 	"fmt"
+	"net"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -37,25 +41,24 @@ func Launch(group string, state *State) (VmRecord, error) {
 		return VmRecord{}, fmt.Errorf("network: %w", err)
 	}
 
-	consoleSock := ConsoleSocketPath(id)
-	pid, err := startCloudHypervisor(apiSock, consoleSock, disk, logPath, tapDev, mac)
+	pid, err := startCloudHypervisor(apiSock, disk, logPath, tapDev, mac)
 	if err != nil {
 		return VmRecord{}, err
 	}
-	shareConsoleSocket(consoleSock)
+	consolePTY := shareConsolePTY(apiSock)
 
 	rec := VmRecord{
-		ID:            id,
-		Group:         group,
-		Status:        StatusRunning,
-		PID:           pid,
-		APISocket:     apiSock,
-		ConsoleSocket: consoleSock,
-		DiskPath:      disk,
-		MAC:           mac,
-		IP:            ip,
-		TapDevice:     tapDev,
-		StartedAt:     time.Now().UTC(),
+		ID:         id,
+		Group:      group,
+		Status:     StatusRunning,
+		PID:        pid,
+		APISocket:  apiSock,
+		ConsolePTY: consolePTY,
+		DiskPath:   disk,
+		MAC:        mac,
+		IP:         ip,
+		TapDevice:  tapDev,
+		StartedAt:  time.Now().UTC(),
 	}
 	if err := state.Add(rec); err != nil {
 		return VmRecord{}, fmt.Errorf("persist state: %w", err)
@@ -103,7 +106,7 @@ func createDisk(path string) error {
 	return nil
 }
 
-func startCloudHypervisor(apiSock, consoleSock, disk, logPath, tapDev, mac string) (int, error) {
+func startCloudHypervisor(apiSock, disk, logPath, tapDev, mac string) (int, error) {
 	logF, err := os.Create(logPath)
 	if err != nil {
 		return 0, fmt.Errorf("open log: %w", err)
@@ -131,7 +134,10 @@ func startCloudHypervisor(apiSock, consoleSock, disk, logPath, tapDev, mac strin
 		"--net", netArg,
 		"--cpus", "boot=2",
 		"--memory", "size=1024M",
-		"--serial", "socket="+consoleSock,
+		// A pty, not socket=: cloud-hypervisor never reaps a disconnected
+		// serial socket client, so after one `vm shell` detaches the console
+		// is dead for every later client. A pty can be reopened repeatedly.
+		"--serial", "pty",
 		"--console", "off",
 	)
 
@@ -152,21 +158,59 @@ func startCloudHypervisor(apiSock, consoleSock, disk, logPath, tapDev, mac strin
 	return cmd.Process.Pid, nil
 }
 
-// shareConsoleSocket waits for cloud-hypervisor to create the serial socket
-// (it binds this at VMM init, before the guest kernel boots, so this is
-// normally sub-100ms) and opens it up to SocketGroup so the CLI can dial it
-// without sudo, same as the control socket. Best-effort: plasmad runs the VM
-// either way, `plasma vm shell` just fails with a clear dial error if this
-// never lands.
-func shareConsoleSocket(path string) {
-	for i := 0; i < 40; i++ {
-		if _, err := os.Stat(path); err == nil {
-			os.Chmod(path, 0o660)
-			chownSocketGroup(path)
-			return
+// shareConsolePTY asks cloud-hypervisor which pty it allocated for the guest
+// serial line and opens it up to SocketGroup so the CLI can attach without
+// sudo, same as the control socket.
+//
+// The pty path is only discoverable through the VMM's API (it is not logged),
+// and the API takes a moment to come up, hence the retry. Best-effort: the VM
+// runs either way and `plasma vm shell` reports a clear error if this is empty.
+func shareConsolePTY(apiSock string) string {
+	for i := 0; i < 60; i++ {
+		if pty, err := queryConsolePTY(apiSock); err == nil && pty != "" {
+			// Root created it; hand access to the plasma group.
+			os.Chmod(pty, 0o660)
+			chownSocketGroup(pty)
+			return pty
 		}
-		time.Sleep(50 * time.Millisecond)
+		time.Sleep(100 * time.Millisecond)
 	}
+	return ""
+}
+
+// queryConsolePTY reads the serial device path out of cloud-hypervisor's
+// vm.info over its API socket.
+func queryConsolePTY(apiSock string) (string, error) {
+	c := &http.Client{
+		Transport: &http.Transport{
+			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+				var d net.Dialer
+				return d.DialContext(ctx, "unix", apiSock)
+			},
+		},
+		Timeout: 2 * time.Second,
+	}
+	resp, err := c.Get("http://localhost/api/v1/vm.info")
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	var info struct {
+		Config struct {
+			Serial struct {
+				Mode string `json:"mode"`
+				File string `json:"file"`
+			} `json:"serial"`
+		} `json:"config"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&info); err != nil {
+		return "", err
+	}
+	if info.Config.Serial.Mode != "Pty" {
+		return "", fmt.Errorf("serial mode is %q, not Pty", info.Config.Serial.Mode)
+	}
+	return info.Config.Serial.File, nil
 }
 
 func setupNetwork(tapDev, mac, ip string) error {

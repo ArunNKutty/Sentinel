@@ -233,13 +233,61 @@ func shellCmd() *cobra.Command {
 	}
 }
 
-func runShell(id string) error {
-	sock := plasma.ConsoleSocketPath(id)
+// openConsole attaches to a VM's serial line. New VMs expose it as a pty,
+// which can be reopened as often as you like; VMs launched before that change
+// still carry a unix socket, which cloud-hypervisor only ever serves to one
+// client. Both are supported so an existing fleet keeps working.
+func openConsole(id string) (io.ReadWriteCloser, func(), error) {
+	vms, err := plasma.NewClient(plasma.SocketPath).List()
+	if err != nil {
+		return nil, nil, err
+	}
+	var rec plasma.VmRecord
+	for _, v := range vms {
+		if v.ID == id {
+			rec = v
+			break
+		}
+	}
+	if rec.ID == "" {
+		return nil, nil, fmt.Errorf("no such VM: %s", id)
+	}
+	if rec.Status != plasma.StatusRunning {
+		return nil, nil, fmt.Errorf("%s is %s", id, rec.Status)
+	}
+
+	if rec.ConsolePTY != "" {
+		f, err := os.OpenFile(rec.ConsolePTY, os.O_RDWR, 0)
+		if err != nil {
+			return nil, nil, fmt.Errorf("open console %s: %w", rec.ConsolePTY, err)
+		}
+		// The pty's line discipline would echo our keystrokes on top of the
+		// guest's own echo, so put the pty in raw mode too — not just stdin.
+		prev, err := term.MakeRaw(int(f.Fd()))
+		if err != nil {
+			f.Close()
+			return nil, nil, fmt.Errorf("raw mode on %s: %w", rec.ConsolePTY, err)
+		}
+		return f, func() { term.Restore(int(f.Fd()), prev); f.Close() }, nil
+	}
+
+	sock := rec.ConsoleSocket
+	if sock == "" {
+		sock = plasma.ConsoleSocketPath(id)
+	}
 	conn, err := net.Dial("unix", sock)
 	if err != nil {
-		return fmt.Errorf("connect to console for %s: %w (is it running?)", id, err)
+		return nil, nil, fmt.Errorf("connect to console for %s: %w (is it running?)", id, err)
 	}
-	defer conn.Close()
+	return conn, func() { conn.Close() }, nil
+}
+
+func runShell(id string) error {
+	conn, closeConsole, err := openConsole(id)
+	if err != nil {
+		return err
+	}
+	defer closeConsole()
 
 	fd := int(os.Stdin.Fd())
 	if !term.IsTerminal(fd) {
@@ -251,12 +299,7 @@ func runShell(id string) error {
 	}
 	defer term.Restore(fd, oldState)
 
-	// Warn against `exit`: logging out makes agetty respawn and write to a
-	// serial socket whose client has gone. cloud-hypervisor keeps the stale
-	// connection, the guest blocks, and the console is dead for every later
-	// client. Detaching instead leaves the session reattachable.
-	fmt.Fprintf(os.Stderr,
-		"Connected to %s. Press Ctrl-X to detach (avoid 'exit' — it wedges the console).\r\n\r\n", id)
+	fmt.Fprintf(os.Stderr, "Connected to %s. Press Ctrl-X to detach.\r\n\r\n", id)
 
 	go io.Copy(os.Stdout, conn)
 	// getty prints its login prompt once, to whoever's attached at the time;

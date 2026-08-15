@@ -16,7 +16,6 @@ APPS="$(dirname "$HERE")"
 SRC="$APPS/gluon-sim"
 DIST="$APPS/dist"
 KERNEL="${PLASMA_KERNEL:-/opt/plasma/debian/vmlinuz}"
-IMAGE="debian:trixie"
 
 [[ -f "$KERNEL" ]] || { echo "guest kernel not found: $KERNEL (run scripts/m1-prep.sh)" >&2; exit 1; }
 
@@ -25,7 +24,19 @@ IMAGE="debian:trixie"
 KVER="$(file -b "$KERNEL" | tr ' ,' '\n\n' | grep -m1 -E '^[0-9]+\.[0-9]+\.[0-9]+' || true)"
 [[ -n "$KVER" ]] || { echo "could not determine guest kernel version from $KERNEL" >&2; exit 1; }
 
+# kbuild demands the exact compiler the kernel was built with, so the build
+# container has to match the kernel's Debian release: a +deb14 (forky) kernel
+# wants gcc-15, which trixie does not ship. Derived rather than hardcoded so a
+# later kernel bump does not silently break with "gcc-NN: not found".
+case "$KVER" in
+    *+deb12*) IMAGE="debian:bookworm" ;;
+    *+deb13*) IMAGE="debian:trixie" ;;
+    *+deb14*) IMAGE="debian:forky" ;;
+    *)        IMAGE="${BUILD_IMAGE:-debian:sid}" ;;
+esac
+
 echo "==> guest kernel: $KVER"
+echo "==> build container: $IMAGE"
 mkdir -p "$DIST"
 
 docker run --rm \
@@ -50,7 +61,13 @@ docker run --rm \
             echo "==> ${KVER} is no longer in the live archive; fetching from snapshot.debian.org"
 
             SNAP=https://snapshot.debian.org
-            BASE="${KVER%-amd64}"          # 6.12.85+deb13-amd64 -> 6.12.85+deb13
+
+            # The -common and -kbuild packages are named after the ABI only,
+            # without the flavour or architecture:
+            #   6.12.85+deb13-amd64        -> 6.12.85+deb13
+            #   6.18.10+deb14-cloud-amd64  -> 6.18.10+deb14
+            BASE="${KVER%-amd64}"
+            for flavour in cloud rt; do BASE="${BASE%-$flavour}"; done
 
             # Resolve a binary package to a download URL by content hash. This
             # avoids pinning a snapshot timestamp, which would go stale the

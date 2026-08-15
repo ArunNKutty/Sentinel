@@ -77,8 +77,15 @@ build plan for now.
   VMs: `gluon_sim.ko` (genl family, per-VM device ID) + `neapp` (fetches the ID
   over gennetlink, X25519+HKDF handshake with peers). **The .ko must be built
   against the guest kernel** — `applications/scripts/build-ko.sh` does it in a
-  `debian:trixie` container, falling back to snapshot.debian.org when the
-  image's kernel has aged out of the live archive.
+  container matching the kernel's Debian release (`+deb13`→trixie/gcc-14,
+  `+deb14`→forky/gcc-15, since kbuild demands the exact compiler), fetching
+  headers from snapshot.debian.org once the kernel ages out of the live archive.
+- **Guest kernel:** pinned by `scripts/kernel-swap.sh`, currently
+  `6.18.10+deb14-cloud-amd64` to match the target's upstream version
+  (real target is `6.18.10-xilinx`). Upstream-version parity only — different
+  vermagic, no Xilinx patches, and x86_64 here vs arm64 there. Debian's cloud
+  flavour has `CONFIG_VIRTIO_BLK=m`, so swapping a kernel means regenerating
+  the initrd or the guest cannot find its root disk.
 - **Topology UI:** `plasma-ui/` — standalone Next.js + React Flow dev tool
   (distinct from Fabric). Its server reaches plasmad over the unix socket, so
   the daemon needs no TCP listener; the UI process must be in the `plasma`
@@ -168,7 +175,7 @@ total ~82 GB.
 - VM ID format: `ne-00`, `ne-01`, … (production groups) and `sandbox-1`,
   `sandbox-2`, … (ephemeral test VMs).
 - Host paths: `/opt/plasma/{petalinux,images,factory}`,
-  socket at `/var/run/plasma.sock`.
+  socket at `/var/run/plasma.sock`. Guest kernel pinned via `scripts/kernel-swap.sh`.
 - Guest paths: `/opt/ne/bin/ne-agent`, `/opt/atom/atom`.
 - vsock CID 3, port 9100 for the agent.
 - Cross-compile: `CGO_ENABLED=0 GOOS=linux GOARCH=arm64` for arm64 targets;

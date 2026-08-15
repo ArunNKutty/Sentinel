@@ -1,1 +1,1 @@
-savedcmd_/build/modules.order := {   echo /build/gluon_sim.o; :; } > /build/modules.order
+savedcmd_modules.order := {   echo gluon_sim.o; :; } > modules.order

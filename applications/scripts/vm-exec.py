@@ -10,12 +10,16 @@ Usage:
 """
 
 import argparse
+import json
+import os
 import re
 import socket
+import subprocess
 import sys
 import time
 
 SOCKET = "/var/run/plasma/vms/{vm}/console.sock"
+STATE = "/var/lib/plasma/state.json"
 USER = "root"
 PASSWORD = "plasma"
 
@@ -52,6 +56,65 @@ def expect(sock, pattern, timeout, label):
     raise TimeoutError(f"timed out waiting for {label}; last saw:\n{buf[-500:]}")
 
 
+class PtyConn:
+    """Give a pty the same recv/sendall/close surface as a socket."""
+
+    def __init__(self, path):
+        self.fd = os.open(path, os.O_RDWR | os.O_NONBLOCK)
+        # Stop the pty's line discipline echoing what we type back at us, on
+        # top of the guest's own echo.
+        subprocess.run(["stty", "-F", path, "raw", "-echo"], check=False)
+        self._timeout = 1.0
+
+    def settimeout(self, t):
+        self._timeout = t
+
+    def recv(self, n):
+        deadline = time.monotonic() + self._timeout
+        while time.monotonic() < deadline:
+            try:
+                return os.read(self.fd, n)
+            except BlockingIOError:
+                time.sleep(0.05)
+        raise socket.timeout()
+
+    def sendall(self, data):
+        os.write(self.fd, data)
+
+    def close(self):
+        try:
+            os.close(self.fd)
+        except OSError:
+            pass
+
+
+def connect_console(vm):
+    """Attach to a VM's console: pty for new VMs, unix socket for older ones."""
+    pty = None
+    try:
+        with open(STATE) as f:
+            for rec in json.load(f):
+                if rec.get("id") == vm:
+                    pty = rec.get("console_pty") or None
+                    break
+    except (OSError, ValueError):
+        pass  # fall back to the socket path
+
+    if pty and os.path.exists(pty):
+        try:
+            return PtyConn(pty)
+        except OSError as e:
+            sys.exit(f"open {pty}: {e} (are you in the plasma group?)")
+
+    path = SOCKET.format(vm=vm)
+    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    try:
+        s.connect(path)
+    except OSError as e:
+        sys.exit(f"connect {path}: {e} (VM running? are you in the plasma group?)")
+    return s
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("vm")
@@ -59,12 +122,7 @@ def main():
     ap.add_argument("--timeout", type=float, default=60.0)
     args = ap.parse_args()
 
-    path = SOCKET.format(vm=args.vm)
-    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    try:
-        s.connect(path)
-    except OSError as e:
-        sys.exit(f"connect {path}: {e} (VM running? are you in the plasma group?)")
+    s = connect_console(args.vm)
 
     try:
         # getty printed its prompt to nobody before we attached; a newline

@@ -32,7 +32,22 @@ func NewServer(state *State, log *slog.Logger) *Server {
 // without sudo. The daemon itself still needs root for taps and VM processes.
 const SocketGroup = "plasma"
 
+// ErrAlreadyRunning means another plasmad already owns the control socket.
+var ErrAlreadyRunning = errors.New("another plasmad is already running")
+
 func (s *Server) Listen(socket string) (net.Listener, *http.Server, error) {
+	// Refuse to start alongside a live daemon. Unconditionally unlinking the
+	// socket would let a second plasmad steal the path from a running one, and
+	// because Go unlinks a unix socket when its listener closes, stopping
+	// EITHER daemon then deletes the survivor's socket and cuts off every
+	// client. Two daemons also both hold state.json, so whichever writes last
+	// silently discards the other's VM records.
+	if conn, err := net.DialTimeout("unix", socket, time.Second); err == nil {
+		conn.Close()
+		return nil, nil, fmt.Errorf("%w (listening on %s)", ErrAlreadyRunning, socket)
+	}
+
+	// Nothing answered, so any socket file here is stale and safe to clear.
 	_ = os.Remove(socket)
 	ln, err := net.Listen("unix", socket)
 	if err != nil {

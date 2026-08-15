@@ -99,9 +99,32 @@ gluon_sim: module verification failed: signature and/or required key missing - t
 gluon_sim: loaded, device_id=0x2000a000002, genl family 'gluon_sim'
 ```
 
-**If you re-run `m1-prep.sh`**, it pulls whatever Debian currently ships as
-"latest", so the guest kernel changes and the existing `.ko` stops loading with
-a vermagic mismatch. Fix: `make` again. The failure is loud, not silent.
+The build container tracks the kernel's Debian release, because kbuild demands
+the exact compiler the kernel was built with: a `+deb13` (trixie) kernel wants
+gcc-14, a `+deb14` (forky) kernel wants gcc-15. Getting this wrong fails with
+`x86_64-linux-gnu-gcc-15: not found`, not a useful message.
+
+**If the guest kernel changes** — `scripts/kernel-swap.sh`, or re-running
+`m1-prep.sh` (which pulls whatever Debian ships as "latest") — the existing
+`.ko` stops loading with a vermagic mismatch. Fix: `make` again. The failure is
+loud, not silent.
+
+## Kernel version
+
+The guest kernel is pinned to match the NE's real target's *upstream* version:
+
+```bash
+sudo ./scripts/kernel-swap.sh                      # default: 6.18.10+deb14-cloud-amd64
+sudo KVER=6.19.14+deb13-cloud-amd64 ./scripts/kernel-swap.sh
+cd applications && make                            # rebuild modules for it
+```
+
+This is upstream-version parity only, and worth being precise about: vermagic
+here is `6.18.10+deb14-cloud-amd64`, not `6.18.10-xilinx`. A module built here
+will not load on the real device, Xilinx's vendor patches are absent, and the
+target is arm64 while this runs x86_64. What it does buy is developing
+`kwark`/`gluon` against the same kernel API generation as the target, instead
+of a 6.12 that would hide API drift.
 
 ---
 

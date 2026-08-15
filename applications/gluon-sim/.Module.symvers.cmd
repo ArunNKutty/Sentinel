@@ -1,1 +1,1 @@
-savedcmd_/build/Module.symvers :=  scripts/mod/modpost -M -m       -o /build/Module.symvers -n -T /build/modules.order -i Module.symvers -e 
+savedcmd_Module.symvers :=  /usr/src/linux-headers-6.18.10+deb14-cloud-amd64/scripts/mod/modpost -M          -o Module.symvers -n -T modules.order -i /usr/src/linux-headers-6.18.10+deb14-cloud-amd64/Module.symvers -e 

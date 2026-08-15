@@ -1,5 +1,13 @@
 #!/usr/bin/env bash
 # Bake the M1 Debian rootfs + extract kernel/initrd. Re-runnable.
+#
+# WARNING: this installs whatever kernel Debian currently ships as "latest"
+# (6.12-era) and overwrites /opt/plasma/debian/{vmlinuz,initrd.img}. That
+# silently undoes scripts/kernel-swap.sh, and out-of-tree modules then fail to
+# load with a vermagic mismatch. After re-running this, re-run:
+#     sudo ./scripts/kernel-swap.sh      # back to the pinned kernel
+#     sudo ./scripts/app-prep.sh         # re-inject the app bootstrap
+#     cd applications && make            # rebuild modules for that kernel
 set -euo pipefail
 
 DEBIAN_VER=trixie
@@ -56,3 +64,9 @@ sudo chroot /mnt/plasma-rootfs systemctl enable systemd-networkd systemd-resolve
 sudo ln -sf ../run/systemd/resolve/stub-resolv.conf /mnt/plasma-rootfs/etc/resolv.conf
 
 echo "M1 prep done. kernel=$KVER  rootfs=$RAW"
+echo
+echo "NOTE: this reset the guest kernel to $KVER and wiped the app bootstrap."
+echo "      To restore the pinned kernel and applications:"
+echo "        sudo ./scripts/kernel-swap.sh"
+echo "        sudo ./scripts/app-prep.sh"
+echo "        cd applications && make"

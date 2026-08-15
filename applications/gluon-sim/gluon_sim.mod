@@ -1,1 +1,1 @@
-/build/gluon_sim.o
+./gluon_sim.o

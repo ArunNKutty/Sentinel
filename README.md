@@ -62,7 +62,17 @@ the `plasma` group, and adds you to it. **That group membership is what lets
 the CLI and UI talk to the daemon without `sudo`** — nothing works until it
 applies.
 
-### 3. Optional extras
+### 3. Guest kernel version
+The Debian cloud image ships 6.12; the NE's real target runs 6.18.10-xilinx.
+To match the upstream version so modules build against the same kernel APIs:
+```bash
+sudo ./scripts/kernel-swap.sh          # -> 6.18.10+deb14-cloud-amd64
+```
+Upstream-version parity only — vermagic is `+deb14-cloud-amd64`, not
+`-xilinx`, and this host is x86_64 while the target is arm64. Rebuild
+out-of-tree modules afterwards with `cd applications && make`.
+
+### 4. Optional extras
 ```bash
 sudo make install-extcap    # Wireshark plugin: VMs in the interface list
 cd ../plasma-ui && npm install
@@ -128,10 +138,14 @@ plasma vm shell host-1
 Log in with `root` / `plasma`. **Press Ctrl-X to detach** — Ctrl-C is passed
 through to the guest, not to `plasma`. Detaching leaves the VM running.
 
-> **Do not type `exit` or `logout`.** Logging out makes the guest's getty
-> respawn and write to a serial socket whose client has gone; cloud-hypervisor
-> keeps the stale connection, so the console goes dead for every later client
-> and that VM can never be attached again. Always leave with Ctrl-X.
+You can attach and detach as often as you like: the console is a pty
+(`--serial pty`), which reopens cleanly.
+
+> **VMs launched before this change use a unix socket console and are still
+> one-shot.** cloud-hypervisor never reaps a disconnected serial-socket client,
+> so once such a VM has been attached to and detached from, its console is dead
+> for good. `plasma vm list` still works; to get a usable shell,
+> `plasma vm delete <id>` and relaunch so it comes up with a pty.
 
 ### Verify connectivity
 ```bash
@@ -247,8 +261,11 @@ their kernel-supplied device IDs. See
 | `plasma: unknown command "capture"` | Stale binary — re-run `sudo make install` |
 | `disk already exists` on launch | `state.json` and the runtime disk are out of sync |
 | Ctrl-C won't exit `vm shell` | Use **Ctrl-X**; Ctrl-C goes to the guest |
-| A VM's console never responds again | Someone typed `exit` in `vm shell`. Unrecoverable for that VM — `plasma vm delete <id>` and relaunch |
+| A VM's console never responds | It predates the pty console (its record has `console_socket`, not `console_pty`). Unrecoverable for that VM — `plasma vm delete <id>` and relaunch |
 | `insmod: vermagic mismatch` in a guest | The base image's kernel changed; rebuild with `cd applications && make` |
+| `another plasmad is already running` | Correct — a second daemon would hijack the socket and corrupt state. Stop the first: `sudo pkill -x plasmad` |
+| VMs launch without `/opt/ne` | No artifacts disk: run `cd applications && make`, and `sudo ./scripts/app-prep.sh` once |
+| Guest kernel reverted to 6.12 | `m1-prep.sh` was re-run; redo `kernel-swap.sh` → `app-prep.sh` → `applications && make` |
 
 If you ever clean up by hand (e.g. the daemon was killed mid-launch), remove
 both sides together — `sudo rm -rf /var/run/plasma/vms/<id>` **and**

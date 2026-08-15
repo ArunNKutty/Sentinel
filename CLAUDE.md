@@ -62,6 +62,27 @@ build plan for now.
   No SSH inside guests.
 - **Host control plane:** `plasma` daemon exposing a Unix socket + REST API.
   The Fabric Go backend talks to this REST API for fleet operations.
+- **Packet capture:** `plasmad` runs `tcpdump` on a VM's host-side tap and
+  streams pcap over the same socket, so operators capture without `sudo`.
+  Surfaced as `plasma capture`, a Wireshark extcap plugin (`plasma-extcap`,
+  VMs appear in Wireshark's interface list), and the topology UI. Unlike
+  containerlab there is no `ip netns exec` step — VM taps are already on the
+  host. **Filters are passed to tcpdump via `-F <file>`, never argv**, because
+  `-z` would otherwise be a root RCE vector in a root daemon.
+- **Applications:** `applications/` — drop folder proving the NE stack's shape
+  can be deployed at fleet scale. `dist/` is packed into one read-only ext4
+  disk (`/opt/plasma/artifacts.img`, `LABEL=plasma-ne`) attached to every VM
+  and mounted at `/opt/ne`; a baked-in `ne-app.service` derives a device ID
+  from the VM's MAC, `insmod`s every `.ko`, and runs the app. Verified at 10
+  VMs: `gluon_sim.ko` (genl family, per-VM device ID) + `neapp` (fetches the ID
+  over gennetlink, X25519+HKDF handshake with peers). **The .ko must be built
+  against the guest kernel** — `applications/scripts/build-ko.sh` does it in a
+  `debian:trixie` container, falling back to snapshot.debian.org when the
+  image's kernel has aged out of the live archive.
+- **Topology UI:** `plasma-ui/` — standalone Next.js + React Flow dev tool
+  (distinct from Fabric). Its server reaches plasmad over the unix socket, so
+  the daemon needs no TCP listener; the UI process must be in the `plasma`
+  group and binds 127.0.0.1 only.
 - **CLI:** `plasma vm list/shell/exec/cp/logs`, fleet ops, image factory, module push.
 - **Networking:** Linux bridges + TAP pairs per VM. Three planes:
   - **Data plane** — protected endpoints connect to each other in a
@@ -88,6 +109,10 @@ plasma vm logs   <id>            # tail console/journal
 plasma vm launch <group>         # add a VM to a group
 plasma vm delete <id>            # remove one
 plasma vm health <id>            # Atom, kwark, gluon state
+
+plasma capture <id>              # live pcap from a VM's tap (no sudo needed)
+  [-f <bpf>] [-w <file>] [--wireshark] [-s <snaplen>]
+plasma capture plasma-br0        # the bridge (broadcast/host traffic only)
 
 plasma fleet status              # GROUP COUNT HEALTHY ATOM KUARK
 plasma fleet exec -- <cmd>       # run on every VM

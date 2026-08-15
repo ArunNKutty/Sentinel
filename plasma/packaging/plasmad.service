@@ -1,0 +1,16 @@
+[Unit]
+Description=Plasma control-plane daemon (NE simulation platform)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/plasmad
+Restart=on-failure
+RestartSec=2
+# Cloud Hypervisor children are setsid so VMs outlive a daemon restart; the
+# default control-group kill would take the whole fleet down with plasmad.
+KillMode=process
+
+[Install]
+WantedBy=multi-user.target

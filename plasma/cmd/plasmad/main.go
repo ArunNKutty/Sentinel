@@ -16,15 +16,36 @@ import (
 func main() {
 	log := slog.New(slog.NewTextHandler(os.Stderr, nil))
 
-	if err := os.MkdirAll(plasma.StateDir, 0o755); err != nil {
-		log.Error("create state dir", "err", err)
+	for _, dir := range []string{plasma.StateDir, plasma.RunDir} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			log.Error("create dir", "dir", dir, "err", err)
+			os.Exit(1)
+		}
+	}
+
+	if moved, err := plasma.AdoptLegacyState(plasma.LegacyStateFile, plasma.StateFile); err != nil {
+		log.Error("adopt legacy state", "err", err)
 		os.Exit(1)
+	} else if moved {
+		log.Info("adopted state from legacy path", "from", plasma.LegacyStateFile, "to", plasma.StateFile)
 	}
 
 	state, err := plasma.LoadState(plasma.StateFile)
 	if err != nil {
 		log.Error("load state", "err", err)
 		os.Exit(1)
+	}
+
+	// State survives reboots; the VMs and their /var/run scratch do not.
+	if stale, err := state.Reconcile(); err != nil {
+		log.Error("reconcile state", "err", err)
+	} else if len(stale) > 0 {
+		log.Warn("vms no longer running, marked exited", "ids", stale)
+	}
+	if orphans, err := plasma.OrphanDisks(state); err != nil {
+		log.Warn("scan runtime disks", "err", err)
+	} else if len(orphans) > 0 {
+		log.Warn("unclaimed disks in runtime dir, remove them if unwanted", "disks", orphans)
 	}
 
 	srv := plasma.NewServer(state, log)

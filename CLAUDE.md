@@ -64,7 +64,7 @@ build plan for now.
   The Fabric Go backend talks to this REST API for fleet operations.
 - **Packet capture:** `plasmad` runs `tcpdump` on a VM's host-side tap and
   streams pcap over the same socket, so operators capture without `sudo`.
-  Surfaced as `plasma capture`, a Wireshark extcap plugin (`plasma-extcap`,
+  Surfaced as `plasma vm capture`, a Wireshark extcap plugin (`plasma-extcap`,
   VMs appear in Wireshark's interface list), and the topology UI. Unlike
   containerlab there is no `ip netns exec` step — VM taps are already on the
   host. **Filters are passed to tcpdump via `-F <file>`, never argv**, because
@@ -86,6 +86,15 @@ build plan for now.
   vermagic, no Xilinx patches, and x86_64 here vs arm64 there. Debian's cloud
   flavour has `CONFIG_VIRTIO_BLK=m`, so swapping a kernel means regenerating
   the initrd or the guest cannot find its root disk.
+- **Topology files:** `plasma vm --topology <file>` brings up a lab from a
+  containerlab-shaped YAML (`topologies/ne-lab.yaml`). Same sections and the
+  same `node -> group -> kind -> defaults` resolution; two deliberate
+  differences: `count` expands one entry into a fleet (containerlab has none),
+  and `links` are **validated and recorded but not wired** — every VM still has
+  one NIC on `plasma-br0`, so declared links render dashed in the UI until the
+  router/switch/NAT kinds create real L2 segments. The node key becomes the VM
+  ID; `kind: vm` is the only kind accepted today. This is the concrete first
+  step of M4.7's Topology DSL.
 - **Topology UI:** `plasma-ui/` — standalone Next.js + React Flow dev tool
   (distinct from Fabric). Its server reaches plasmad over the unix socket, so
   the daemon needs no TCP listener; the UI process must be in the `plasma`
@@ -105,6 +114,8 @@ build plan for now.
 
 ## CLI surface
 ```
+plasma init                      # check env, start plasmad, enter a plasma-group shell
+plasma exit                      # destroy fleet + all runtime state (keeps build artifacts)
 plasma up ./plasma.yaml          # boot the fleet
 plasma down                      # tear it down
 
@@ -114,12 +125,13 @@ plasma vm exec   <id> -- <cmd>   # one-shot exec
 plasma vm cp     <src> <dst>     # copy in/out (id:/path syntax)
 plasma vm logs   <id>            # tail console/journal
 plasma vm launch <group>         # add a VM to a group
+plasma vm --topology <file>      # bring up a containerlab-style topology file
 plasma vm delete <id>            # remove one
 plasma vm health <id>            # Atom, kwark, gluon state
 
-plasma capture <id>              # live pcap from a VM's tap (no sudo needed)
+plasma vm capture <id>              # live pcap from a VM's tap (no sudo needed)
   [-f <bpf>] [-w <file>] [--wireshark] [-s <snaplen>]
-plasma capture plasma-br0        # the bridge (broadcast/host traffic only)
+plasma vm capture plasma-br0        # the bridge (broadcast/host traffic only)
 
 plasma fleet status              # GROUP COUNT HEALTHY ATOM KUARK
 plasma fleet exec -- <cmd>       # run on every VM

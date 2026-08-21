@@ -33,7 +33,7 @@ export async function POST(
       {
         error:
           "No graphical display detected. Start the UI from a desktop session, " +
-          "or use: plasma capture " + id + " --wireshark",
+          "or use: plasma vm capture " + id + " --wireshark",
       },
       { status: 409 },
     );

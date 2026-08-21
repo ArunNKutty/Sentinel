@@ -69,6 +69,7 @@ func (s *Server) Listen(socket string) (net.Listener, *http.Server, error) {
 	mux.HandleFunc("DELETE /v1/vms/{id}", s.handleDelete)
 	mux.HandleFunc("GET /v1/vms/{id}/capture", s.handleCapture)
 	mux.HandleFunc("GET /v1/topology", s.handleTopology)
+	mux.HandleFunc("PUT /v1/topology/links", s.handleSetLinks)
 
 	return ln, &http.Server{Handler: mux}, nil
 }
@@ -98,7 +99,15 @@ func (s *Server) handleLaunch(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.launchMu.Lock()
-	rec, err := Launch(req.Group, s.state)
+	var rec VmRecord
+	var err error
+	if req.ID != "" {
+		// A topology file names its nodes, so the ID comes from the caller
+		// rather than the <group>-N allocator.
+		rec, err = LaunchNamed(req.ID, req.Group, LaunchOpts{CPUs: req.CPUs, Memory: req.Memory}, s.state)
+	} else {
+		rec, err = Launch(req.Group, s.state)
+	}
 	s.launchMu.Unlock()
 	if err != nil {
 		s.log.Error("launch failed", "group", req.Group, "err", err)
@@ -116,9 +125,29 @@ func (s *Server) handleList(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(ListResponse{VMs: s.state.List()})
 }
 
+// handleSetLinks records the links an applied topology declared. They are not
+// wired to anything yet — every VM still has one NIC on the shared bridge —
+// but persisting them lets the UI draw the intended topology.
+func (s *Server) handleSetLinks(w http.ResponseWriter, r *http.Request) {
+	var doc LinksDocument
+	if err := json.NewDecoder(r.Body).Decode(&doc); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if err := SaveLinks(doc); err != nil {
+		s.log.Error("save links", "err", err)
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	s.log.Info("topology links recorded", "topology", doc.Topology, "links", len(doc.Links))
+	w.WriteHeader(http.StatusNoContent)
+}
+
 func (s *Server) handleTopology(w http.ResponseWriter, r *http.Request) {
+	// A missing links file just means no topology has been applied.
+	declared, _ := LoadLinks()
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(BuildTopology(s.state, func() int64 { return time.Now().Unix() }))
+	json.NewEncoder(w).Encode(BuildTopology(s.state, func() int64 { return time.Now().Unix() }, declared))
 }
 
 // handleCapture streams pcap for as long as the client stays connected. The

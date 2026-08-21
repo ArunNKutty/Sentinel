@@ -99,7 +99,7 @@ export default function TopologyView() {
   const onCopy = useCallback(
     async (id: string) => {
       const f = filter.trim() ? ` -f '${filter.trim()}'` : "";
-      const cmd = `plasma capture ${id}${f} --wireshark`;
+      const cmd = `plasma vm capture ${id}${f} --wireshark`;
       try {
         await navigator.clipboard.writeText(cmd);
         notify(`Copied: ${cmd}`);
@@ -145,14 +145,22 @@ export default function TopologyView() {
       });
     });
 
-    const edges: Edge[] = topo.links.map((l) => ({
-      id: `${l.from}-${l.to}`,
+    // Declared links come from a topology file and have no L2 segment behind
+    // them yet, so they must not look like the real tap-to-bridge links.
+    const edges: Edge[] = topo.links.map((l, i) => ({
+      id: `${l.from}-${l.to}-${i}`,
       source: l.from,
       target: l.to,
-      label: l.via,
-      animated: vms.find((v) => v.id === l.from)?.status === "running",
-      style: { stroke: "#30363d" },
-      labelStyle: { fill: "#8b949e", fontSize: 10, fontFamily: "monospace" },
+      label: l.wired ? l.via : l.label,
+      animated: l.wired && vms.find((v) => v.id === l.from)?.status === "running",
+      style: l.wired
+        ? { stroke: "#30363d" }
+        : { stroke: "#d29922", strokeDasharray: "6 4", strokeWidth: 1.5 },
+      labelStyle: {
+        fill: l.wired ? "#8b949e" : "#d29922",
+        fontSize: 10,
+        fontFamily: "monospace",
+      },
       labelBgStyle: { fill: "#0d1117" },
     }));
 

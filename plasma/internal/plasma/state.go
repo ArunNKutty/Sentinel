@@ -112,6 +112,26 @@ func (s *State) Allocate(group string) (id, ip, mac string, err error) {
 		fmt.Sprintf("02:00:0a:00:00:%02x", octet), nil
 }
 
+// AllocateNamed reserves an explicitly named VM plus the lowest free address.
+// Topology files name their nodes, so those launches bypass the <group>-N
+// allocator but must still take an address and reject duplicates.
+func (s *State) AllocateNamed(id string) (ip, mac string, err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	for _, v := range s.vms {
+		if v.ID == id {
+			return "", "", fmt.Errorf("VM %q already exists", id)
+		}
+	}
+	octet, err := s.freeOctetLocked()
+	if err != nil {
+		return "", "", err
+	}
+	return fmt.Sprintf("10.0.0.%d", octet),
+		fmt.Sprintf("02:00:0a:00:00:%02x", octet), nil
+}
+
 // nextIDLocked follows the CLAUDE.md convention: ne-NN (zero-indexed, padded
 // width 2) for the "ne" group; <group>-N (one-indexed, unpadded) otherwise.
 func (s *State) nextIDLocked(group string) string {
@@ -125,18 +145,33 @@ func (s *State) nextIDLocked(group string) string {
 		if err != nil {
 			continue
 		}
-		if n > highest {
-			highest = n
+		// Normalise to a 0-based ordinal: "ne" IDs are already zero-indexed,
+		// every other group is one-indexed on the wire.
+		ord := n
+		if group != "ne" {
+			ord = n - 1
+		}
+		if ord > highest {
+			highest = ord
 		}
 	}
-	next := highest + 1
+	return FleetMemberID(group, highest+1)
+}
+
+// FleetMemberID names the ordinal-th (0-based) member of a group, per the
+// CLAUDE.md convention: ne-NN zero-indexed and padded to 2 for the "ne" group,
+// <group>-N one-indexed otherwise. Shared with topology expansion so a fleet
+// declared in a file is named exactly as `plasma vm launch <group>` would name
+// it — taking a 0-based ordinal in both cases, so callers never have to know
+// which convention applies.
+func FleetMemberID(group string, ordinal int) string {
+	if ordinal < 0 {
+		ordinal = 0
+	}
 	if group == "ne" {
-		return fmt.Sprintf("ne-%02d", next)
+		return fmt.Sprintf("ne-%02d", ordinal)
 	}
-	if next < 1 {
-		next = 1
-	}
-	return fmt.Sprintf("%s-%d", group, next)
+	return fmt.Sprintf("%s-%d", group, ordinal+1)
 }
 
 // freeOctetLocked returns the lowest final octet in 10.0.0.0/24 not already

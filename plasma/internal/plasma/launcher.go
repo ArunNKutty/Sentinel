@@ -13,12 +13,50 @@ import (
 	"time"
 )
 
+// LaunchOpts are per-VM overrides; zero values take the launcher defaults.
+type LaunchOpts struct {
+	CPUs   int
+	Memory string
+}
+
+const (
+	defaultCPUs   = 2
+	defaultMemory = "1024M"
+)
+
+func (o LaunchOpts) cpus() int {
+	if o.CPUs > 0 {
+		return o.CPUs
+	}
+	return defaultCPUs
+}
+
+func (o LaunchOpts) memory() string {
+	if o.Memory != "" {
+		return o.Memory
+	}
+	return defaultMemory
+}
+
+// Launch adds a VM to a group, letting the daemon pick the next <group>-N.
 func Launch(group string, state *State) (VmRecord, error) {
 	id, ip, mac, err := state.Allocate(group)
 	if err != nil {
 		return VmRecord{}, err
 	}
+	return launch(id, group, ip, mac, LaunchOpts{}, state)
+}
 
+// LaunchNamed starts a VM under a caller-chosen ID, as topology files require.
+func LaunchNamed(id, group string, opts LaunchOpts, state *State) (VmRecord, error) {
+	ip, mac, err := state.AllocateNamed(id)
+	if err != nil {
+		return VmRecord{}, err
+	}
+	return launch(id, group, ip, mac, opts, state)
+}
+
+func launch(id, group, ip, mac string, opts LaunchOpts, state *State) (VmRecord, error) {
 	vmDir := filepath.Join(VMsDir, id)
 	if err := os.MkdirAll(vmDir, 0o755); err != nil {
 		return VmRecord{}, fmt.Errorf("vm dir: %w", err)
@@ -41,7 +79,7 @@ func Launch(group string, state *State) (VmRecord, error) {
 		return VmRecord{}, fmt.Errorf("network: %w", err)
 	}
 
-	pid, err := startCloudHypervisor(apiSock, disk, logPath, tapDev, mac)
+	pid, err := startCloudHypervisor(apiSock, disk, logPath, tapDev, mac, opts)
 	if err != nil {
 		return VmRecord{}, err
 	}
@@ -58,6 +96,8 @@ func Launch(group string, state *State) (VmRecord, error) {
 		MAC:        mac,
 		IP:         ip,
 		TapDevice:  tapDev,
+		CPUs:       opts.cpus(),
+		Memory:     opts.memory(),
 		StartedAt:  time.Now().UTC(),
 	}
 	if err := state.Add(rec); err != nil {
@@ -106,7 +146,7 @@ func createDisk(path string) error {
 	return nil
 }
 
-func startCloudHypervisor(apiSock, disk, logPath, tapDev, mac string) (int, error) {
+func startCloudHypervisor(apiSock, disk, logPath, tapDev, mac string, opts LaunchOpts) (int, error) {
 	logF, err := os.Create(logPath)
 	if err != nil {
 		return 0, fmt.Errorf("open log: %w", err)
@@ -132,8 +172,8 @@ func startCloudHypervisor(apiSock, disk, logPath, tapDev, mac string) (int, erro
 	args = append(args, disks...)
 	args = append(args,
 		"--net", netArg,
-		"--cpus", "boot=2",
-		"--memory", "size=1024M",
+		"--cpus", fmt.Sprintf("boot=%d", opts.cpus()),
+		"--memory", "size="+opts.memory(),
 		// A pty, not socket=: cloud-hypervisor never reaps a disconnected
 		// serial socket client, so after one `vm shell` detaches the console
 		// is dead for every later client. A pty can be reopened repeatedly.

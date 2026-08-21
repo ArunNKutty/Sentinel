@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"text/tabwriter"
@@ -31,14 +32,84 @@ func main() {
 		SilenceErrors: true,
 	}
 
-	vm := &cobra.Command{Use: "vm", Short: "VM lifecycle commands"}
-	vm.AddCommand(launchCmd(), listCmd(), shellCmd(), deleteCmd())
-	root.AddCommand(vm, downCmd(), captureCmd())
+	var topoPath string
+	vm := &cobra.Command{
+		Use:   "vm",
+		Short: "VM lifecycle commands",
+		Long: "VM lifecycle commands.\n\n" +
+			"With --topology, brings up every node declared in a containerlab-style\n" +
+			"topology file instead of launching VMs one at a time:\n" +
+			"  plasma vm --topology ./ne-lab.yaml",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if topoPath == "" {
+				return cmd.Help()
+			}
+			cmd.SilenceUsage = true
+			return runTopology(topoPath)
+		},
+	}
+	vm.Flags().StringVar(&topoPath, "topology", "", "bring up a topology file (YAML)")
+	// capture is VM-scoped, so it belongs beside list/shell/delete rather than
+	// at the top level.
+	vm.AddCommand(launchCmd(), listCmd(), shellCmd(), deleteCmd(), captureCmd())
+	root.AddCommand(initCmd(), exitCmd(), vm, downCmd())
 
 	if err := root.Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)
 	}
+}
+
+// runTopology brings up every node a topology file declares. Nodes are
+// launched in the file's sorted order so addresses are assigned predictably.
+func runTopology(path string) error {
+	topo, err := plasma.LoadTopoFile(path)
+	if err != nil {
+		return err
+	}
+
+	name := topo.Name
+	if name == "" {
+		name = filepath.Base(path)
+	}
+	fmt.Printf("topology %s: %d node(s)", name, len(topo.Nodes))
+	if len(topo.Links) > 0 {
+		fmt.Printf(", %d declared link(s)", len(topo.Links))
+	}
+	fmt.Println()
+
+	c := plasma.NewClient(plasma.SocketPath)
+
+	var failed []string
+	for _, n := range topo.Nodes {
+		rec, err := c.LaunchSpec(plasma.LaunchRequest{
+			ID: n.ID, Group: n.Group, CPUs: n.CPUs, Memory: n.Memory,
+		})
+		if err != nil {
+			fmt.Printf("  %-12s FAILED  %v\n", n.ID, err)
+			failed = append(failed, n.ID)
+			continue
+		}
+		fmt.Printf("  %-12s %-9s %s  (%d cpu, %s)\n",
+			rec.ID, rec.Group, rec.IP, rec.CPUs, rec.Memory)
+	}
+
+	// Record the declared links even on partial failure, so the UI reflects
+	// what the file asked for.
+	if err := c.SetLinks(plasma.LinksDocument{Topology: name, Links: topo.Links}); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: could not record links: %v\n", err)
+	}
+	if len(topo.Links) > 0 {
+		fmt.Printf("\n%d link(s) recorded. Note: links are not wired yet — every VM has one\n"+
+			"NIC on %s. Per-link segments arrive with the router/switch/nat kinds.\n",
+			len(topo.Links), plasma.Bridge)
+	}
+
+	if len(failed) > 0 {
+		return fmt.Errorf("%d of %d node(s) failed: %s",
+			len(failed), len(topo.Nodes), strings.Join(failed, ", "))
+	}
+	return nil
 }
 
 func launchCmd() *cobra.Command {
@@ -142,10 +213,10 @@ func captureCmd() *cobra.Command {
 			"The daemon runs the capture, so this needs no sudo — only membership\n" +
 			"of the 'plasma' group.\n\n" +
 			"Examples:\n" +
-			"  plasma capture host-1 --wireshark\n" +
-			"  plasma capture host-1 | wireshark -k -i -\n" +
-			"  plasma capture host-1 -f icmp -w icmp.pcap\n" +
-			"  plasma capture " + plasma.CaptureAllTarget + "   # the bridge itself",
+			"  plasma vm capture host-1 --wireshark\n" +
+			"  plasma vm capture host-1 | wireshark -k -i -\n" +
+			"  plasma vm capture host-1 -f icmp -w icmp.pcap\n" +
+			"  plasma vm capture " + plasma.CaptureAllTarget + "   # the whole bridge, not one VM",
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cmd.SilenceUsage = true
@@ -163,11 +234,10 @@ func runCapture(id, filter, outPath string, snaplen int, toWireshark bool) error
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
-	// Binary pcap on a terminal is unreadable garbage; tcpdump refuses the
-	// same way. Only bail when there is no other sink configured.
-	if outPath == "" && !toWireshark && term.IsTerminal(int(os.Stdout.Fd())) {
-		return fmt.Errorf("refusing to write pcap to a terminal: use -w <file>, --wireshark, or pipe to another command")
-	}
+	// Straight to a terminal, the stream would be unreadable binary. Rather
+	// than refuse, decode it the way `tcpdump -i eth0` would — that is what
+	// this command looks like, so it should behave like it.
+	toTerminal := outPath == "" && !toWireshark && term.IsTerminal(int(os.Stdout.Fd()))
 
 	c := plasma.NewClient(plasma.SocketPath)
 	stream, err := c.Capture(ctx, id, plasma.CaptureOptions{Filter: filter, Snaplen: snaplen})
@@ -188,10 +258,45 @@ func runCapture(id, filter, outPath string, snaplen int, toWireshark bool) error
 		fmt.Fprintf(os.Stderr, "capturing %s -> %s (Ctrl-C to stop)\n", id, outPath)
 		_, err = io.Copy(f, stream)
 		return captureExitErr(ctx, err)
+	case toTerminal:
+		return printPackets(ctx, id, stream)
 	default:
+		// Piped or redirected: hand over raw pcap, so `| wireshark -k -i -`
+		// and `> file.pcap` both work.
 		_, err = io.Copy(os.Stdout, stream)
 		return captureExitErr(ctx, err)
 	}
+}
+
+// printPackets renders the live stream as readable packet lines by feeding it
+// to a local tcpdump, which is already a prerequisite. Reusing it costs no new
+// dependency and gives exactly the output people expect from this shape of
+// command.
+func printPackets(ctx context.Context, id string, stream io.Reader) error {
+	bin, err := exec.LookPath("tcpdump")
+	if err != nil {
+		return fmt.Errorf("tcpdump not found on PATH, so the capture cannot be shown here: " +
+			"use -w <file>, --wireshark, or pipe this command somewhere")
+	}
+
+	// -l line-buffers so packets appear as they arrive rather than in blocks;
+	// -n skips DNS lookups, which would stall output in a lab with no resolver.
+	td := exec.CommandContext(ctx, bin, "-r", "-", "-n", "-l")
+	td.Stdin = stream
+	td.Stdout = os.Stdout
+	// tcpdump announces "reading from file -, link-type EN10MB" on stderr;
+	// hold it back and only surface it if tcpdump actually fails.
+	var errBuf strings.Builder
+	td.Stderr = &errBuf
+
+	fmt.Fprintf(os.Stderr, "capturing %s (Ctrl-C to stop)\n", id)
+	if err := td.Run(); err != nil && ctx.Err() == nil {
+		if msg := strings.TrimSpace(errBuf.String()); msg != "" {
+			return fmt.Errorf("tcpdump: %s", msg)
+		}
+		return err
+	}
+	return captureExitErr(ctx, nil)
 }
 
 func pipeToWireshark(ctx context.Context, id string, stream io.Reader) error {

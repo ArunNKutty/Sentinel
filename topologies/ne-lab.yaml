@@ -1,0 +1,60 @@
+# Example plasma topology — containerlab-shaped.
+#
+#   plasma vm --topology ./topologies/ne-lab.yaml
+#
+# Resolution order for node settings is node -> group -> kind -> defaults,
+# exactly as containerlab does it.
+
+name: ne-lab
+
+topology:
+  # Applied to every node unless something more specific overrides it.
+  defaults:
+    kind: vm
+    cpus: 2
+    memory: 1024M
+
+  # Per-kind settings. `vm` is the only kind today; router/switch/nat are
+  # planned and will be rejected with a clear error until then.
+  kinds:
+    vm:
+      cpus: 2
+      memory: 1024M
+
+  # Shared settings for a set of nodes. The group name is also the plasma
+  # group a VM is filed under (`plasma vm list` GROUP column).
+  groups:
+    ne:
+      memory: 1536M
+    host:
+      memory: 1024M
+
+  nodes:
+    # A single VM. The node key becomes the VM ID verbatim, so this is
+    # reachable as `plasma vm shell host-a`.
+    host-a:
+      group: host
+
+    host-b:
+      group: host
+
+    # `count` expands one entry into a fleet, named with the same convention
+    # the auto-allocator uses: the "ne" group gives ne-00, ne-01, ne-02.
+    # (This is a plasma addition; containerlab has no count.)
+    ne:
+      group: ne
+      count: 3
+
+  # Declared, not yet wired. Every VM currently gets one NIC on plasma-br0;
+  # these are validated and drawn in the topology UI so the intent is
+  # recorded, and become real L2 segments once the router/switch/nat kinds
+  # land. Both containerlab spellings are accepted.
+  links:
+    - endpoints: ["host-a:eth1", "ne-00:eth1"]
+    - endpoints: ["host-b:eth1", "ne-01:eth1"]
+    - type: veth
+      endpoints:
+        - node: ne-00
+          interface: eth2
+        - node: ne-01
+          interface: eth2

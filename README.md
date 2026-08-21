@@ -9,14 +9,17 @@ Network Encryptor (NE) product at fleet scale.
 
 | Task | Command |
 |------|---------|
+| **Get a shell ready** | **`plasma init`** |
+| **Destroy everything** | **`plasma exit`** |
 | Start the daemon | `sudo plasmad &` |
 | Start the UI | `cd plasma-ui && npm run dev` → http://127.0.0.1:7080 |
 | Create a VM | `plasma vm launch host` |
+| Bring up a topology | `plasma vm --topology ./topologies/ne-lab.yaml` |
 | List VMs | `plasma vm list` |
 | Shell into a VM | `plasma vm shell host-1` (detach: **Ctrl-X**) |
 | Delete one VM | `plasma vm delete host-1` |
 | Delete the fleet | `plasma down` |
-| Capture packets | `plasma capture host-1 --wireshark` |
+| Capture packets | `plasma vm capture host-1 --wireshark` |
 
 ---
 
@@ -83,12 +86,62 @@ sudo make install-service   # run plasmad under systemd instead of by hand
 
 ## Running Plasma
 
-### Start the daemon
+### `plasma init` — the one command to start with
+```bash
+plasma init
+```
+Checks the host prerequisites, starts `plasmad` if it isn't running, and — if
+your shell isn't in the `plasma` group — drops you into one that is. Safe to
+re-run; it changes nothing already in order.
+
+```
+plasma init
+  [ok  ] cloud-hypervisor /usr/local/bin/cloud-hypervisor
+  [ok  ] base image       /opt/plasma/images/rootfs-base.raw
+  [ok  ] guest kernel     6.18.10+deb14-cloud-amd64
+  [ok  ] artifacts        /opt/plasma/artifacts.img
+  [warn] daemon           not running, starting it...
+  [ok  ] daemon           started, listening on /var/run/plasma.sock
+  [ok  ] group            this shell is in 'plasma'
+  [ok  ] fleet            0 VM(s), 0 running
+
+ready.
+```
+
+| Flag | Effect |
+|------|--------|
+| `--check` | report only, change nothing; non-zero exit if not usable |
+| `--no-shell` | never start a shell, just print what to run |
+
+> **Why it starts a shell.** Group membership is fixed when a process starts,
+> and no child process can add a group to its parent shell — so a shell that
+> predates `sudo make install` can never reach the socket. `plasma init` execs
+> `newgrp plasma`, giving you a session that has it; type `exit` to return.
+> Non-interactive callers get the `sg plasma -c "..."` form instead, so scripts
+> never hang.
+
+### `plasma exit` — the counterpart
+```bash
+plasma exit          # asks first; -y to skip
+```
+Destroys everything `init` and the daemon create at runtime: every VM with its
+disk and tap, the bridge, dnsmasq, the recorded topology, `state.json`, and
+plasmad itself. Afterwards `plasma init` starts from nothing.
+
+It **keeps** the expensive build artifacts, since those are not session state:
+the base image, the guest kernel/initrd, and `artifacts.img`. Rebuilding those
+means re-running `m1-prep.sh` / `kernel-swap.sh` / `applications && make`.
+
+> It only touches plasma's own resources. Other tenants on the host — libvirt
+> and multipass also run `dnsmasq` and own `tap-*` devices — are left alone,
+> which a blanket `pkill dnsmasq` would not manage.
+
+### Start the daemon by hand
 ```bash
 sudo plasmad &
 ```
 Root is needed for taps and VM processes; the CLI and UI are not. Skip this if
-you installed the systemd service.
+you ran `plasma init` or installed the systemd service.
 
 ### Start the UI
 ```bash
@@ -120,6 +173,54 @@ plasma vm launch host        # first → host-1 at 10.0.0.2
 plasma vm launch host        # second → host-2 at 10.0.0.3
 ```
 IDs are `<group>-N`; addresses come from the lowest free slot in `10.0.0.0/24`.
+
+### From a topology file
+Bring up a whole lab in one command, containerlab-style:
+```bash
+plasma vm --topology ./topologies/ne-lab.yaml
+```
+```
+topology ne-lab: 5 node(s), 3 declared link(s)
+  host-a       host      10.0.0.2  (2 cpu, 1024M)
+  host-b       host      10.0.0.3  (2 cpu, 1024M)
+  ne-00        ne        10.0.0.4  (2 cpu, 1536M)
+  ne-01        ne        10.0.0.5  (2 cpu, 1536M)
+  ne-02        ne        10.0.0.6  (2 cpu, 1536M)
+```
+See [`topologies/ne-lab.yaml`](topologies/ne-lab.yaml) for the full format. In
+short:
+
+```yaml
+name: ne-lab
+topology:
+  defaults: {kind: vm, cpus: 2, memory: 1024M}
+  kinds:
+    vm: {cpus: 2, memory: 1024M}
+  groups:
+    ne: {memory: 1536M}
+  nodes:
+    host-a: {group: host}
+    ne: {group: ne, count: 3}      # -> ne-00, ne-01, ne-02
+  links:
+    - endpoints: ["host-a:eth1", "ne-00:eth1"]
+```
+
+- Settings resolve **node → group → kind → defaults**, as in containerlab.
+- The **node key becomes the VM ID**, so `ne-00` above is `plasma vm shell ne-00`.
+- **`count`** expands one entry into a fleet (a plasma addition; containerlab
+  has no such field), named exactly as the auto-allocator would.
+- **`kind: vm`** is the only kind today; `router`/`switch`/`nat` are rejected
+  with a clear error until they land.
+- Node IDs are capped at 11 characters so tap names (`tap-<id>`, 15 bytes max)
+  stay unique.
+
+> **`links:` are declared, not wired.** They are validated against the declared
+> nodes and drawn in the topology UI as dashed amber edges, but every VM still
+> has a single NIC on `plasma-br0`. Real per-link L2 segments arrive with the
+> router/switch/NAT kinds.
+
+Re-applying a topology whose VMs already exist fails per node rather than
+duplicating them; `plasma down` first to start clean.
 
 ### List
 ```bash
@@ -179,22 +280,34 @@ the `plasma` group.
 4. On any VM node press:
    - **Wireshark** — opens a live capture on your desktop
    - **.pcap** — streams a download (cancel the download to stop the capture)
-   - **Copy** — copies the equivalent `plasma capture` command
+   - **Copy** — copies the equivalent `plasma vm capture` command
 
 > **The Wireshark button needs a graphical session.** The UI server spawns
 > Wireshark as you, so over plain SSH it returns *"No graphical display
 > detected"*. Use `ssh -X`, run the UI on the machine you're sitting at, or
-> fall back to `plasma capture <id> --wireshark`.
+> fall back to `plasma vm capture <id> --wireshark`.
 
 ### From the CLI
 ```bash
-plasma capture host-1 --wireshark          # live into Wireshark
-plasma capture host-1 -w out.pcap          # to a file
-plasma capture host-1 -f "icmp"            # BPF filter
-plasma capture host-1 -f "port 4500" -s 128
-plasma capture host-1 | wireshark -k -i -  # explicit pipe
-plasma capture plasma-br0                  # the bridge (see below)
+plasma vm capture host-1                      # live packet lines, like tcpdump
+plasma vm capture host-1 -f "icmp"            # BPF filter
+plasma vm capture host-1 --wireshark          # live into Wireshark
+plasma vm capture host-1 -w out.pcap          # to a file
+plasma vm capture host-1 -f "port 4500" -s 128
+plasma vm capture host-1 | wireshark -k -i -  # explicit pipe
+plasma vm capture plasma-br0                  # the bridge (see below)
 ```
+```
+$ plasma vm capture host-1 -f icmp
+capturing host-1 (Ctrl-C to stop)
+07:08:29.145366 IP 10.0.0.1 > 10.0.0.2: ICMP echo request, id 6, seq 1, length 64
+07:08:29.145571 IP 10.0.0.2 > 10.0.0.1: ICMP echo reply, id 6, seq 1, length 64
+```
+
+The output adapts to where it is going: **readable packet lines on a terminal**
+(decoded through your local `tcpdump`), **raw pcap when piped or redirected**,
+so `| wireshark -k -i -` and `> out.pcap` both work unchanged.
+
 Ctrl-C stops it. An invalid filter fails immediately with tcpdump's own
 message instead of leaving you an empty file.
 
@@ -203,9 +316,9 @@ message instead of leaving you an empty file.
 *"could not connect to display"*. Instead of forwarding X, stream the pcap to
 the Wireshark on your laptop — run this **locally**, not on the plasma host:
 ```bash
-ssh <user>@<host> "plasma capture host-1 -f icmp" | wireshark -k -i -
+ssh <user>@<host> "plasma vm capture host-1 -f icmp" | wireshark -k -i -
 ```
-`plasma capture` writes pcap to stdout whenever stdout is not a terminal, so
+`plasma vm capture` writes pcap to stdout whenever stdout is not a terminal, so
 this needs nothing installed on your side but Wireshark. (`ssh -X` and then
 `--wireshark` also works, if you already run an X server.)
 
@@ -254,8 +367,8 @@ their kernel-supplied device IDs. See
 
 | Symptom | Cause / fix |
 |---------|-------------|
-| `no access to /var/run/plasma.sock` | Your **session** predates the group. Check with `id -nG`; if `getent group plasma` lists you but `id -nG` doesn't, reconnect your SSH/VS Code session, or use `newgrp plasma` / `sg plasma -c "<cmd>"` for now |
-| `plasmad is not running` | Start it: `sudo plasmad &` |
+| `no access to /var/run/plasma.sock` | Your **session** predates the group. Run `plasma init` — it starts a shell that has it (or `newgrp plasma` / re-login) |
+| `plasmad is not running` | Run `plasma init`, or start it by hand: `sudo plasmad &` |
 | CLI: *"could not connect to display"* / Qt platform plugin error | `--wireshark` needs a GUI session. Over SSH, pipe to a local Wireshark instead — see "Over SSH" above |
 | UI: *"No graphical display detected"* | Same cause, caught before a capture starts. Use the **.pcap** button, or the SSH pipe |
 | `plasma: unknown command "capture"` | Stale binary — re-run `sudo make install` |

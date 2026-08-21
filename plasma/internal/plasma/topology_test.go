@@ -14,7 +14,7 @@ func TestBuildTopology(t *testing.T) {
 			Status: StatusExited, TapDevice: "tap-host-2"},
 	)
 
-	topo := BuildTopology(s, func() int64 { return time.Now().Unix() })
+	topo := BuildTopology(s, func() int64 { return time.Now().Unix() }, LinksDocument{})
 
 	if len(topo.Planes) != 1 || topo.Planes[0].Bridge != Bridge {
 		t.Fatalf("planes = %+v, want one %s plane", topo.Planes, Bridge)
@@ -53,14 +53,48 @@ func TestBuildTopologyDerivesMissingTap(t *testing.T) {
 	s := newTestState(t,
 		VmRecord{ID: "host-9", Group: "host", IP: "10.0.0.9", Status: StatusRunning},
 	)
-	topo := BuildTopology(s, func() int64 { return time.Now().Unix() })
+	topo := BuildTopology(s, func() int64 { return time.Now().Unix() }, LinksDocument{})
 	if topo.Nodes[0].Tap != "tap-host-9" {
 		t.Errorf("tap = %q, want derived tap-host-9", topo.Nodes[0].Tap)
 	}
 }
 
+func TestBuildTopologyMergesDeclaredLinks(t *testing.T) {
+	s := newTestState(t,
+		VmRecord{ID: "a", Group: "a", IP: "10.0.0.2", Status: StatusRunning, TapDevice: "tap-a"},
+		VmRecord{ID: "b", Group: "b", IP: "10.0.0.3", Status: StatusRunning, TapDevice: "tap-b"},
+	)
+	declared := LinksDocument{
+		Topology: "lab",
+		Links:    []DeclaredLink{{ANode: "a", AInterface: "eth1", BNode: "b", BInterface: "eth1"}},
+	}
+
+	topo := BuildTopology(s, func() int64 { return 0 }, declared)
+
+	if topo.Declared != "lab" {
+		t.Errorf("declared = %q, want lab", topo.Declared)
+	}
+	// Two real tap-to-bridge links plus the one declared link.
+	if len(topo.Links) != 3 {
+		t.Fatalf("got %d links, want 3", len(topo.Links))
+	}
+	var wired, unwired int
+	for _, l := range topo.Links {
+		if l.Wired {
+			wired++
+		} else {
+			unwired++
+		}
+	}
+	// The distinction matters: a declared link has no L2 segment behind it,
+	// and the UI must not draw it as though it does.
+	if wired != 2 || unwired != 1 {
+		t.Errorf("got %d wired / %d declared, want 2 / 1", wired, unwired)
+	}
+}
+
 func TestBuildTopologyEmptyFleet(t *testing.T) {
-	topo := BuildTopology(newTestState(t), func() int64 { return 0 })
+	topo := BuildTopology(newTestState(t), func() int64 { return 0 }, LinksDocument{})
 	if len(topo.Nodes) != 0 || len(topo.Links) != 0 {
 		t.Errorf("empty fleet should have no nodes or links, got %+v", topo)
 	}

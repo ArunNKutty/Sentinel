@@ -38,12 +38,19 @@ export interface TopologyLink {
   to: string;
   via: string;
   plane: string;
+  /** True for real tap-to-bridge links; false for links a topology file
+   *  merely declared, which have no L2 segment behind them yet. */
+  wired: boolean;
+  /** Declared interface pair, e.g. "eth1 ↔ eth1". */
+  label?: string;
 }
 
 export interface Topology {
   planes: Plane[];
   nodes: TopologyNode[];
   links: TopologyLink[];
+  /** Name of the topology file last applied, if any. */
+  declared?: string;
 }
 
 export class PlasmaError extends Error {

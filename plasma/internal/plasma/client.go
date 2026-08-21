@@ -50,7 +50,31 @@ func (c *Client) dialErr(err error) error {
 }
 
 func (c *Client) Launch(group string) (VmRecord, error) {
-	body, _ := json.Marshal(LaunchRequest{Group: group})
+	return c.LaunchSpec(LaunchRequest{Group: group})
+}
+
+// SetLinks records the links declared by an applied topology file.
+func (c *Client) SetLinks(doc LinksDocument) error {
+	body, _ := json.Marshal(doc)
+	req, err := http.NewRequest(http.MethodPut, "http://plasma/v1/topology/links", bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return c.dialErr(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNoContent {
+		msg, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("daemon: %s: %s", resp.Status, strings.TrimSpace(string(msg)))
+	}
+	return nil
+}
+
+func (c *Client) LaunchSpec(spec LaunchRequest) (VmRecord, error) {
+	body, _ := json.Marshal(spec)
 	resp, err := c.http.Post("http://plasma/v1/vms", "application/json", bytes.NewReader(body))
 	if err != nil {
 		return VmRecord{}, c.dialErr(err)

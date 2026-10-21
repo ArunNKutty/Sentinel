@@ -88,13 +88,36 @@ build plan for now.
   the initrd or the guest cannot find its root disk.
 - **Topology files:** `plasma vm --topology <file>` brings up a lab from a
   containerlab-shaped YAML (`topologies/ne-lab.yaml`). Same sections and the
-  same `node -> group -> kind -> defaults` resolution; two deliberate
+  same `node -> group -> kind -> defaults` resolution; three deliberate
   differences: `count` expands one entry into a fleet (containerlab has none),
-  and `links` are **validated and recorded but not wired** — every VM still has
-  one NIC on `plasma-br0`, so declared links render dashed in the UI until the
-  router/switch/NAT kinds create real L2 segments. The node key becomes the VM
+  `apps` deploy per-node payloads (next bullet), and `links` are **validated
+  and recorded but not wired** — every VM still has one NIC on `plasma-br0`, so
+  declared links render dashed in the UI until the router/switch/NAT kinds
+  create real L2 segments. The node key becomes the VM
   ID; `kind: vm` is the only kind accepted today. This is the concrete first
   step of M4.7's Topology DSL.
+- **Per-node applications:** a node (or group) can declare `apps:` — a list of
+  `name` / `type` / `path` / `cmd`. `type` is `kernel` (a `.ko` the guest
+  insmods) or `userspace` (a program it runs: Go binary, Python script, …);
+  omitted, it is inferred from the extension, and either way it is checked
+  against the payload so a `.ko` is never exec'd. `path` is the host-side
+  payload, relative to the topology file. `cmd` is either a **start script**
+  (absolute or relative to the topology file) — packed onto the apps disk
+  beside the payload and run there, since the guest cannot reach host paths —
+  or a command line for the guest's shell (`make -C /opt/apps/<name> run`).
+  Both run with the app's directory as cwd, `$APP` set to the deployed payload
+  and `$DEVICE_ID` to the VM's MAC-derived identity; omit `cmd` and a kernel
+  app is `insmod`ed with `device_id=$DEVICE_ID` while a userspace one is
+  executed directly. Everything is validated at parse time, so a typo fails
+  before the first VM boots. plasmad packs a node's apps into its own small
+  ext4 image (`/opt/plasma/runtime/<id>-apps.img`, `LABEL=plasma-apps`, built
+  with `mke2fs -d`, attached read-only); `ne-bootstrap` mounts it at
+  `/opt/apps`, walks `apps.list` (`name<TAB>type<TAB>file<TAB>cmd`) and logs
+  each app to `/var/log/ne-apps/<name>.log`. Apps inherit whole — a node
+  declaring any replaces its group's list rather than extending it. This is
+  per-node, distinct from the fleet-wide artifacts disk above; the two coexist
+  on the same VM. Changing the bootstrap means re-running
+  `scripts/app-prep.sh` against the base rootfs.
 - **Topology UI:** `plasma-ui/` — standalone Next.js + React Flow dev tool
   (distinct from Fabric). Its server reaches plasmad over the unix socket, so
   the daemon needs no TCP listener; the UI process must be in the `plasma`

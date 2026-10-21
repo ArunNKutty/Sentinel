@@ -104,7 +104,7 @@ func (s *Server) handleLaunch(w http.ResponseWriter, r *http.Request) {
 	if req.ID != "" {
 		// A topology file names its nodes, so the ID comes from the caller
 		// rather than the <group>-N allocator.
-		rec, err = LaunchNamed(req.ID, req.Group, LaunchOpts{CPUs: req.CPUs, Memory: req.Memory}, s.state)
+		rec, err = LaunchNamed(req.ID, req.Group, LaunchOpts{CPUs: req.CPUs, Memory: req.Memory, Apps: req.Apps}, s.state)
 	} else {
 		rec, err = Launch(req.Group, s.state)
 	}

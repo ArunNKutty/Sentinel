@@ -17,6 +17,8 @@ import (
 type LaunchOpts struct {
 	CPUs   int
 	Memory string
+	// Apps are deployed on a per-VM disk built at launch (see apps.go).
+	Apps []AppSpec
 }
 
 const (
@@ -70,6 +72,12 @@ func launch(id, group, ip, mac string, opts LaunchOpts, state *State) (VmRecord,
 		return VmRecord{}, err
 	}
 
+	appsDisk, err := buildAppsDisk(id, opts.Apps)
+	if err != nil {
+		os.Remove(disk)
+		return VmRecord{}, fmt.Errorf("applications: %w", err)
+	}
+
 	apiSock := filepath.Join(vmDir, "ch.sock")
 	logPath := filepath.Join(vmDir, "ch.log")
 
@@ -79,7 +87,7 @@ func launch(id, group, ip, mac string, opts LaunchOpts, state *State) (VmRecord,
 		return VmRecord{}, fmt.Errorf("network: %w", err)
 	}
 
-	pid, err := startCloudHypervisor(apiSock, disk, logPath, tapDev, mac, opts)
+	pid, err := startCloudHypervisor(apiSock, disk, appsDisk, logPath, tapDev, mac, opts)
 	if err != nil {
 		return VmRecord{}, err
 	}
@@ -98,6 +106,8 @@ func launch(id, group, ip, mac string, opts LaunchOpts, state *State) (VmRecord,
 		TapDevice:  tapDev,
 		CPUs:       opts.cpus(),
 		Memory:     opts.memory(),
+		AppsDisk:   appsDisk,
+		Apps:       opts.Apps,
 		StartedAt:  time.Now().UTC(),
 	}
 	if err := state.Add(rec); err != nil {
@@ -146,7 +156,7 @@ func createDisk(path string) error {
 	return nil
 }
 
-func startCloudHypervisor(apiSock, disk, logPath, tapDev, mac string, opts LaunchOpts) (int, error) {
+func startCloudHypervisor(apiSock, disk, appsDisk, logPath, tapDev, mac string, opts LaunchOpts) (int, error) {
 	logF, err := os.Create(logPath)
 	if err != nil {
 		return 0, fmt.Errorf("open log: %w", err)
@@ -160,6 +170,11 @@ func startCloudHypervisor(apiSock, disk, logPath, tapDev, mac string, opts Launc
 	// applications built must still launch.
 	if _, err := os.Stat(ArtifactsDisk); err == nil {
 		disks = append(disks, "path="+ArtifactsDisk+",image_type=raw,readonly=on")
+	}
+	// The applications disk is this VM's alone, but nothing in the guest ever
+	// writes to it, so read-only keeps the payloads exactly as packed.
+	if appsDisk != "" {
+		disks = append(disks, "path="+appsDisk+",image_type=raw,readonly=on")
 	}
 
 	args := []string{
@@ -316,6 +331,9 @@ func Delete(id string, state *State) (VmRecord, error) {
 	teardownNetwork(rec.TapDevice)
 	os.RemoveAll(filepath.Join(VMsDir, rec.ID))
 	os.Remove(rec.DiskPath)
+	if rec.AppsDisk != "" {
+		os.Remove(rec.AppsDisk)
+	}
 
 	return rec, nil
 }

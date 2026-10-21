@@ -24,6 +24,9 @@ topology:
   # Shared settings for a set of nodes. The group name is also the plasma
   # group a VM is filed under (`plasma vm list` GROUP column).
   groups:
+    # Group settings — including `apps` — are inherited by their nodes. A node
+    # that declares its own apps replaces the group's list rather than adding
+    # to it, so one stanza always says everything a node runs.
     ne:
       memory: 1536M
     host:
@@ -32,11 +35,48 @@ topology:
   nodes:
     # A single VM. The node key becomes the VM ID verbatim, so this is
     # reachable as `plasma vm shell host-a`.
+    #
+    # `apps` are this node's payloads. Each is packed onto a small per-VM
+    # disk, mounted read-only at /opt/apps in the guest, and started by
+    # ne-app.service at boot:
+    #   name  identifies the app; also its directory and log file name
+    #         (/opt/apps/<name>/, /var/log/ne-apps/<name>.log)
+    #   type  `kernel` (a .ko the guest insmods) or `userspace` (a program it
+    #         runs: Go binary, Python script, anything executable). Inferred
+    #         from the extension when omitted, and checked against the payload
+    #         either way.
+    #   path  host-side source file. Relative paths resolve against this
+    #         topology file. Missing files are rejected before any VM launches.
+    #   cmd   how to start it. Either a start script — absolute, or relative
+    #         to this file — which is deployed beside the payload and run
+    #         there, or a command line for the guest's shell
+    #         (`make -C /opt/apps/<name> run`, `python3 $APP --serve`). Both
+    #         run with the app's directory as cwd, $APP set to the deployed
+    #         payload and $DEVICE_ID to this VM's identity. Omit it and a
+    #         kernel app is insmod'ed with device_id=$DEVICE_ID while a
+    #         userspace one is simply executed.
     host-a:
       group: host
+      apps:
+        # The module is listed first so it is loaded before the app that talks
+        # to it. Its `cmd` means the load is the script's job, not the
+        # bootstrap's default insmod — the module parameters stay visible here.
+        - name: gluon-sim
+          type: kernel
+          path: ../applications/dist/gluon_sim.ko
+          cmd: ./apps/load-gluon.sh
+        - name: neapp
+          type: userspace
+          path: ../applications/dist/neapp
+          cmd: ./apps/start-neapp.sh
 
     host-b:
       group: host
+      apps:
+        - name: neapp
+          type: userspace
+          path: ../applications/dist/neapp
+          cmd: ./apps/start-neapp.sh
 
     # `count` expands one entry into a fleet, named with the same convention
     # the auto-allocator uses: the "ne" group gives ne-00, ne-01, ne-02.

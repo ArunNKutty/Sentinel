@@ -27,20 +27,15 @@ install -d -m 0755 "$MNT/opt/ne"
 # every module it finds, then hand off to the application.
 cat > "$MNT/usr/local/sbin/ne-bootstrap" <<'BOOTSTRAP'
 #!/bin/sh
-# Bootstrap the NE application stack from the artifacts disk.
+# Bootstrap the NE application stack from the artifacts disk, then start the
+# per-node applications a topology file declared.
 set -eu
 
 ARTIFACTS_LABEL=plasma-ne
+APPS_LABEL=plasma-apps
 NE_DIR=/opt/ne
-
-# No artifacts disk attached is a normal state (a plain VM), not a failure.
-if ! blkid -L "$ARTIFACTS_LABEL" >/dev/null 2>&1; then
-    echo "ne-bootstrap: no '$ARTIFACTS_LABEL' disk attached, nothing to load"
-    exit 0
-fi
-
-mountpoint -q "$NE_DIR" || mount -o ro -L "$ARTIFACTS_LABEL" "$NE_DIR"
-echo "ne-bootstrap: mounted $ARTIFACTS_LABEL at $NE_DIR"
+APPS_DIR=/opt/apps
+LOG_DIR=/var/log/ne-apps
 
 # Derive a stable, fleet-unique device ID from the primary NIC's MAC. Plasma
 # assigns each VM a distinct MAC (02:00:0a:00:00:02, ...), so this is constant
@@ -49,33 +44,113 @@ echo "ne-bootstrap: mounted $ARTIFACTS_LABEL at $NE_DIR"
 IFACE=$(ip -o link show | awk -F': ' '$2 != "lo" {print $2; exit}')
 MAC=$(cat "/sys/class/net/$IFACE/address" 2>/dev/null || echo "00:00:00:00:00:00")
 DEVICE_ID="0x$(echo "$MAC" | tr -d ':')"
+export DEVICE_ID
 echo "ne-bootstrap: iface=$IFACE mac=$MAC device_id=$DEVICE_ID"
 
-for ko in "$NE_DIR"/*.ko; do
-    [ -e "$ko" ] || continue
+# insmod, passing device_id only to modules that accept it.
+load_ko() {
+    ko=$1
     name=$(basename "$ko" .ko)
     if lsmod | awk '{print $1}' | grep -qx "$name"; then
         echo "ne-bootstrap: $name already loaded"
-        continue
+        return 0
     fi
     if insmod "$ko" device_id="$DEVICE_ID" 2>/dev/null; then
         echo "ne-bootstrap: insmod $name device_id=$DEVICE_ID"
     else
-        # Not every module takes a device_id parameter.
         insmod "$ko" && echo "ne-bootstrap: insmod $name"
     fi
-done
+}
 
+# The per-VM applications disk, built from this node's `apps:` block. Each
+# line of apps.list is: name<TAB>type<TAB>relative file<TAB>cmd, where type is
+# "kernel" (a .ko to insmod) or "userspace" (a program to run) and cmd may be
+# empty. A start script that came with the app is already beside it, so cmd is
+# just "./<script>".
+#
+# Mounted before the artifacts disk so the node's own modules are known first:
+# both disks may carry a gluon_sim.ko, and the one the topology named for this
+# node is the one that must end up loaded.
+apps_list=
+if blkid -L "$APPS_LABEL" >/dev/null 2>&1; then
+    mkdir -p "$APPS_DIR" "$LOG_DIR"
+    mountpoint -q "$APPS_DIR" || mount -o ro -L "$APPS_LABEL" "$APPS_DIR"
+    echo "ne-bootstrap: mounted $APPS_LABEL at $APPS_DIR"
+    apps_list="$APPS_DIR/apps.list"
+fi
+
+# Module names this node declared, so the artifacts disk does not load its own
+# copy of one first and leave the node's version sitting unused on disk.
+declared_ko=" "
+if [ -n "$apps_list" ]; then
+    declared_ko=" $(awk -F'\t' '$2 == "kernel" {
+        n = $3; sub(/.*\//, "", n); sub(/\.ko$/, "", n); print n
+    }' "$apps_list" | tr '\n' ' ')"
+fi
+
+# The fleet-wide artifacts disk. Not being attached is a normal state (a plain
+# VM), not a failure.
+if blkid -L "$ARTIFACTS_LABEL" >/dev/null 2>&1; then
+    mkdir -p "$NE_DIR"
+    mountpoint -q "$NE_DIR" || mount -o ro -L "$ARTIFACTS_LABEL" "$NE_DIR"
+    echo "ne-bootstrap: mounted $ARTIFACTS_LABEL at $NE_DIR"
+    for ko in "$NE_DIR"/*.ko; do
+        [ -e "$ko" ] || continue
+        name=$(basename "$ko" .ko)
+        case "$declared_ko" in
+            *" $name "*)
+                echo "ne-bootstrap: $name declared by this node, skipping the artifacts copy"
+                continue
+                ;;
+        esac
+        load_ko "$ko"
+    done
+else
+    echo "ne-bootstrap: no '$ARTIFACTS_LABEL' disk attached, nothing to load"
+fi
+
+started=0
+if [ -n "$apps_list" ]; then
+    while IFS="$(printf '\t')" read -r name apptype file cmd; do
+        [ -n "${name:-}" ] || continue
+        APP="$APPS_DIR/$file"
+        if [ ! -e "$APP" ]; then
+            echo "ne-bootstrap: app $name: missing $APP" >&2
+            continue
+        fi
+        # A kernel module with no cmd is loaded, not run. With a cmd it is the
+        # cmd's job to load it — a script passing module parameters, say.
+        if [ "$apptype" = kernel ] && [ -z "${cmd:-}" ]; then
+            load_ko "$APP"
+            continue
+        fi
+        echo "ne-bootstrap: app $name ($apptype): $cmd (log $LOG_DIR/$name.log)"
+        # cwd is the app's own directory so a cmd can reference files beside
+        # the payload; APP and DEVICE_ID are exported for it to use.
+        APP="$APP" APP_DIR="$(dirname "$APP")" \
+            sh -c "cd \"\$APP_DIR\" && exec $cmd" \
+            >>"$LOG_DIR/$name.log" 2>&1 &
+        started=$((started + 1))
+    done < "$apps_list"
+fi
+
+# A node that declared its own apps has said what it runs, so the fleet-wide
+# artifacts disk does not also start its reference app on top — the two copies
+# would race for the same ports. Stay alive instead: systemd tears down the
+# cgroup when this script exits, and these apps are our children.
+if [ "$started" -gt 0 ]; then
+    echo "ne-bootstrap: $started app(s) running"
+    wait
 # run.sh is the generic hook: drop one in the artifacts disk to run something
 # other than the reference app.
-if [ -x "$NE_DIR/run.sh" ]; then
+elif [ -x "$NE_DIR/run.sh" ]; then
     echo "ne-bootstrap: exec run.sh"
     exec "$NE_DIR/run.sh"
 elif [ -x "$NE_DIR/neapp" ]; then
     echo "ne-bootstrap: exec neapp serve"
     exec "$NE_DIR/neapp" serve
 else
-    echo "ne-bootstrap: no run.sh or neapp in $NE_DIR; modules loaded only"
+    echo "ne-bootstrap: no run.sh, neapp or apps to start; modules loaded only"
 fi
 BOOTSTRAP
 chmod 0755 "$MNT/usr/local/sbin/ne-bootstrap"
@@ -106,4 +181,5 @@ ln -sf ../ne-app.service \
 
 sync
 echo "app-prep done: ne-app.service installed and enabled in $RAW"
-echo "VMs launched from now on will mount the artifacts disk and load its modules."
+echo "VMs launched from now on will mount the artifacts disk, load its modules,"
+echo "and start the applications declared for their node."

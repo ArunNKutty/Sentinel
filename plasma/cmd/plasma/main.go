@@ -83,7 +83,7 @@ func runTopology(path string) error {
 	var failed []string
 	for _, n := range topo.Nodes {
 		rec, err := c.LaunchSpec(plasma.LaunchRequest{
-			ID: n.ID, Group: n.Group, CPUs: n.CPUs, Memory: n.Memory,
+			ID: n.ID, Group: n.Group, CPUs: n.CPUs, Memory: n.Memory, Apps: n.Apps,
 		})
 		if err != nil {
 			fmt.Printf("  %-12s FAILED  %v\n", n.ID, err)
@@ -92,6 +92,9 @@ func runTopology(path string) error {
 		}
 		fmt.Printf("  %-12s %-9s %s  (%d cpu, %s)\n",
 			rec.ID, rec.Group, rec.IP, rec.CPUs, rec.Memory)
+		for _, a := range n.Apps {
+			fmt.Printf("  %-12s   %s app %s <- %s\n", "", a.Type, a.Name, a.Path)
+		}
 	}
 
 	// Record the declared links even on partial failure, so the UI reflects

@@ -78,6 +78,10 @@ func listInterfaces() error {
 		}
 		fmt.Printf("interface {value=%s%s}{display=Plasma VM %s (%s)}\n",
 			vmPrefix, v.ID, v.ID, v.IP)
+		for _, n := range v.Nics {
+			fmt.Printf("interface {value=%s%s:%s}{display=Plasma VM %s %s (%s)}\n",
+				vmPrefix, v.ID, n.Name, v.ID, n.Name, n.Tap)
+		}
 	}
 
 	fmt.Printf("interface {value=%s%s}{display=Plasma bridge %s (broadcast + host traffic only)}\n",

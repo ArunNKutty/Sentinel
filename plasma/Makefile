@@ -10,7 +10,7 @@ INSTALL_HOME := $(shell getent passwd $(INSTALL_USER) | cut -d: -f6)
 EXTCAP_DIR  ?= $(INSTALL_HOME)/.config/wireshark/extcap
 
 .PHONY: build test install uninstall install-service uninstall-service \
-        install-extcap uninstall-extcap ui-dev
+        install-extcap uninstall-extcap
 
 build:
 	go build -o bin/plasma        ./cmd/plasma
@@ -52,11 +52,6 @@ install-extcap: build
 
 uninstall-extcap:
 	rm -f $(EXTCAP_DIR)/plasma-extcap
-
-# The UI talks to plasmad over its unix socket, so it has to run as a member of
-# the plasma group — hence sg rather than a bare npm run.
-ui-dev:
-	cd ../plasma-ui && sg $(SOCKET_GROUP) -c "npm run dev"
 
 install-service: install
 	install -m 0644 packaging/plasmad.service /etc/systemd/system/plasmad.service

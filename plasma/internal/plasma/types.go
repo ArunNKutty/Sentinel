@@ -71,9 +71,12 @@ type VmRecord struct {
 	Memory     string `json:"memory,omitempty"`
 	// AppsDisk is the per-VM applications image, empty when the node declared
 	// no apps. Recorded so Delete can remove it.
-	AppsDisk  string    `json:"apps_disk,omitempty"`
-	Apps      []AppSpec `json:"apps,omitempty"`
-	StartedAt time.Time `json:"started_at"`
+	AppsDisk string    `json:"apps_disk,omitempty"`
+	Apps     []AppSpec `json:"apps,omitempty"`
+	// Nics are the VM's NICs beyond eth0, one per wired link. Recorded so
+	// Delete can remove their taps and any link bridge left empty.
+	Nics      []NicRecord `json:"nics,omitempty"`
+	StartedAt time.Time   `json:"started_at"`
 }
 
 // ConsoleSocketPath is the per-VM Unix socket that carries the guest's raw
@@ -109,6 +112,46 @@ type LaunchRequest struct {
 	// Apps are payloads to deploy into this VM. Paths are read by the daemon,
 	// so they must be absolute on the host running plasmad.
 	Apps []AppSpec `json:"apps,omitempty"`
+	// Nics are the VM's links, eth1 upward. eth0 is always the management
+	// NIC on plasma-br0 and is not listed.
+	Nics []NicSpec `json:"nics,omitempty"`
+}
+
+// Link bridges are prefixed so a topology can never name, and so attach VMs
+// to or delete, a host bridge plasma does not own (docker0, virbr0, ...).
+const (
+	// LinkBridgePrefix names the private two-port bridge behind a VM-to-VM
+	// link.
+	LinkBridgePrefix = "plk-"
+	// NodeBridgePrefix names the bridge a `kind: bridge` node stands for.
+	NodeBridgePrefix = "pbr-"
+)
+
+// NicSpec is one link NIC to give a VM. Exactly one of Bridge or HostName is
+// set: the tap joins a link bridge, or stays unbridged on the host under
+// HostName (containerlab's `host:<ifname>` endpoint), e.g. for a mirror port.
+type NicSpec struct {
+	// Name is the guest interface, eth1 upward. Cloud Hypervisor enumerates
+	// --net devices in argument order and the guest boots with
+	// net.ifnames=0, so declaring eth2 really does produce eth2.
+	Name     string `json:"name"`
+	Bridge   string `json:"bridge,omitempty"`
+	HostName string `json:"host_name,omitempty"`
+	// Address is the NIC's address with its prefix length (10.77.0.1/24),
+	// set when its bridge has a subnet. plasma does not configure it in the
+	// guest; it records it and hands it to the guest (linkInfoCredential).
+	Address string `json:"address,omitempty"`
+}
+
+// NicRecord is a link NIC as launched.
+type NicRecord struct {
+	Name string `json:"name"`
+	// Tap is the host side: a generated pt<octet>-<name>, or the HostName a
+	// host endpoint asked for.
+	Tap     string `json:"tap"`
+	MAC     string `json:"mac"`
+	Bridge  string `json:"bridge,omitempty"`
+	Address string `json:"address,omitempty"`
 }
 
 // AppSpec is one application deployed onto a node: a payload to carry in and
@@ -143,10 +186,10 @@ const (
 	AppTypeUserspace = "userspace"
 )
 
-// DeclaredLink is a link from a topology file. It records intent only: every
-// VM currently gets one NIC on the shared bridge, so links are drawn in the
-// UI but do not yet create their own L2 segment. Wiring arrives with the
-// router/switch/NAT kinds.
+// DeclaredLink is a link from a topology file, as written. The wiring itself
+// travels in each VM's LaunchRequest.Nics; this record is what a topology reader falls
+// back on for a link whose VM is not running (or failed to launch), so the
+// intended topology stays visible.
 type DeclaredLink struct {
 	ANode      string `json:"a_node"`
 	AInterface string `json:"a_interface"`

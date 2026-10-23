@@ -1,6 +1,7 @@
 package plasma
 
 import (
+	"strings"
 	"testing"
 	"time"
 )
@@ -30,7 +31,7 @@ func TestBuildTopology(t *testing.T) {
 	if !running.Capturable {
 		t.Error("running VM should be capturable")
 	}
-	// A stopped VM's tap is gone, so the UI must not offer a capture button.
+	// A stopped VM's tap is gone, so it must not be offered for capture.
 	if exited.Capturable {
 		t.Error("exited VM must not be capturable")
 	}
@@ -87,7 +88,7 @@ func TestBuildTopologyMergesDeclaredLinks(t *testing.T) {
 		}
 	}
 	// The distinction matters: a declared link has no L2 segment behind it,
-	// and the UI must not draw it as though it does.
+	// and must not be reported as though it does.
 	if wired != 2 || unwired != 1 {
 		t.Errorf("got %d wired / %d declared, want 2 / 1", wired, unwired)
 	}
@@ -98,8 +99,60 @@ func TestBuildTopologyEmptyFleet(t *testing.T) {
 	if len(topo.Nodes) != 0 || len(topo.Links) != 0 {
 		t.Errorf("empty fleet should have no nodes or links, got %+v", topo)
 	}
-	// The plane still exists so the UI can render (and capture on) the bridge.
+	// The plane still exists so the bridge is reported (and capturable).
 	if len(topo.Planes) != 1 {
 		t.Errorf("want the plane present even with no VMs, got %+v", topo.Planes)
+	}
+}
+
+func TestBuildTopologyWiredNics(t *testing.T) {
+	s := newTestState(t,
+		VmRecord{ID: "a", Group: "a", IP: "10.0.0.2", Status: StatusRunning, TapDevice: "tap-a",
+			Nics: []NicRecord{
+				{Name: "eth1", Tap: "pt2-eth1", Bridge: "pbr-wire"},
+				{Name: "eth2", Tap: "cap0"},
+			}},
+		VmRecord{ID: "b", Group: "b", IP: "10.0.0.3", Status: StatusRunning, TapDevice: "tap-b",
+			Nics: []NicRecord{{Name: "eth1", Tap: "pt3-eth1", Bridge: "pbr-wire"}}},
+		VmRecord{ID: "c", Group: "c", IP: "10.0.0.4", Status: StatusExited, TapDevice: "tap-c",
+			Nics: []NicRecord{{Name: "eth1", Tap: "pt4-eth1", Bridge: "pbr-wire"}}},
+	)
+	declared := LinksDocument{Topology: "lab", Links: []DeclaredLink{
+		{ANode: "a", AInterface: "eth1", BNode: "wire", BInterface: "a"},
+		{ANode: "b", AInterface: "eth1", BNode: "wire", BInterface: "b"},
+		{ANode: "c", AInterface: "eth1", BNode: "wire", BInterface: "c"},
+		{ANode: "a", AInterface: "eth2", BNode: "host", BInterface: "cap0"},
+	}}
+
+	topo := BuildTopology(s, func() int64 { return 0 }, declared)
+
+	// The management plane, the shared bridge once, and the host tap.
+	var planes []string
+	for _, p := range topo.Planes {
+		planes = append(planes, p.Bridge)
+	}
+	if strings.Join(planes, ",") != Bridge+",pbr-wire,cap0" {
+		t.Errorf("planes = %v, want %s, pbr-wire, cap0", planes, Bridge)
+	}
+
+	var wired, unwired []string
+	for _, l := range topo.Links {
+		if l.To == Bridge {
+			continue
+		}
+		if l.Wired {
+			wired = append(wired, l.From+"->"+l.To+" via "+l.Via)
+		} else {
+			unwired = append(unwired, l.From)
+		}
+	}
+	want := []string{"a->pbr-wire via pt2-eth1", "a->cap0 via cap0", "b->pbr-wire via pt3-eth1"}
+	if strings.Join(wired, "; ") != strings.Join(want, "; ") {
+		t.Errorf("wired = %v, want %v", wired, want)
+	}
+	// A wired link must not be drawn twice; only the stopped VM's link falls
+	// back to its declared, dashed form.
+	if len(unwired) != 1 || unwired[0] != "c" {
+		t.Errorf("declared-only links from %v, want just c", unwired)
 	}
 }

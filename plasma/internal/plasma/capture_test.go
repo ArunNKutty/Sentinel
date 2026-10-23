@@ -141,3 +141,28 @@ func TestStartCaptureReportsBadFilter(t *testing.T) {
 		t.Logf("note: got %v", err)
 	}
 }
+
+func TestResolveCaptureTargetLinkNics(t *testing.T) {
+	s := newTestState(t,
+		VmRecord{ID: "node1", IP: "10.0.0.3", Status: StatusRunning, TapDevice: "tap-node1",
+			Nics: []NicRecord{{Name: "eth1", Tap: "pt3-eth1", Bridge: "pbr-wire"}}},
+		VmRecord{ID: "fabric", IP: "10.0.0.2", Status: StatusRunning, TapDevice: "tap-fabric",
+			Nics: []NicRecord{{Name: "eth1", Tap: "fabcap"}}},
+	)
+	for target, want := range map[string]string{
+		"node1:eth1":  "pt3-eth1",
+		"fabric:eth1": "fabcap",
+		"pbr-wire":    "pbr-wire",
+	} {
+		if got, err := ResolveCaptureTarget(target, s); err != nil || got != want {
+			t.Errorf("%s = %q, %v; want %s", target, got, err, want)
+		}
+	}
+	if _, err := ResolveCaptureTarget("node1:eth9", s); !errors.Is(err, ErrNotFound) {
+		t.Errorf("missing NIC err = %v, want ErrNotFound", err)
+	}
+	// Only a bridge some running VM is on; never an arbitrary host bridge.
+	if _, err := ResolveCaptureTarget("pbr-other", s); !errors.Is(err, ErrNotFound) {
+		t.Errorf("unknown bridge err = %v, want ErrNotFound", err)
+	}
+}

@@ -85,10 +85,11 @@ topology:
       group: ne
       count: 3
 
-  # Declared, not yet wired. Every VM currently gets one NIC on plasma-br0;
-  # these are validated and drawn in the topology UI so the intent is
-  # recorded, and become real L2 segments once the router/switch/nat kinds
-  # land. Both containerlab spellings are accepted.
+  # Each link adds a NIC to both VMs (eth0 stays the management NIC on
+  # plasma-br0) joined by a private two-port bridge, so host-a's eth1 and
+  # ne-00's eth1 share an L2 segment of their own. A `kind: bridge` node joins
+  # more than two VMs on one segment, and `host:<ifname>` leaves a VM's tap
+  # unbridged on the host. Both containerlab spellings are accepted.
   links:
     - endpoints: ["host-a:eth1", "ne-00:eth1"]
     - endpoints: ["host-b:eth1", "ne-01:eth1"]

@@ -19,6 +19,8 @@ type LaunchOpts struct {
 	Memory string
 	// Apps are deployed on a per-VM disk built at launch (see apps.go).
 	Apps []AppSpec
+	// Nics are link NICs beyond eth0 (see nics.go).
+	Nics []NicSpec
 }
 
 const (
@@ -59,6 +61,17 @@ func LaunchNamed(id, group string, opts LaunchOpts, state *State) (VmRecord, err
 }
 
 func launch(id, group, ip, mac string, opts LaunchOpts, state *State) (VmRecord, error) {
+	if err := ValidateNics(opts.Nics); err != nil {
+		return VmRecord{}, err
+	}
+	nics, err := planNics(ip, opts.Nics)
+	if err != nil {
+		return VmRecord{}, err
+	}
+	if err := addressConflict(nics, state.List()); err != nil {
+		return VmRecord{}, err
+	}
+
 	vmDir := filepath.Join(VMsDir, id)
 	if err := os.MkdirAll(vmDir, 0o755); err != nil {
 		return VmRecord{}, fmt.Errorf("vm dir: %w", err)
@@ -86,9 +99,14 @@ func launch(id, group, ip, mac string, opts LaunchOpts, state *State) (VmRecord,
 	if err := setupNetwork(tapDev, mac, ip); err != nil {
 		return VmRecord{}, fmt.Errorf("network: %w", err)
 	}
+	if err := setupNics(nics); err != nil {
+		teardownNics(nics)
+		return VmRecord{}, fmt.Errorf("link nics: %w", err)
+	}
 
-	pid, err := startCloudHypervisor(apiSock, disk, appsDisk, logPath, tapDev, mac, opts)
+	pid, err := startCloudHypervisor(id, apiSock, disk, appsDisk, logPath, tapDev, mac, nics, opts)
 	if err != nil {
+		teardownNics(nics)
 		return VmRecord{}, err
 	}
 	consolePTY := shareConsolePTY(apiSock)
@@ -108,6 +126,7 @@ func launch(id, group, ip, mac string, opts LaunchOpts, state *State) (VmRecord,
 		Memory:     opts.memory(),
 		AppsDisk:   appsDisk,
 		Apps:       opts.Apps,
+		Nics:       nics,
 		StartedAt:  time.Now().UTC(),
 	}
 	if err := state.Add(rec); err != nil {
@@ -156,13 +175,11 @@ func createDisk(path string) error {
 	return nil
 }
 
-func startCloudHypervisor(apiSock, disk, appsDisk, logPath, tapDev, mac string, opts LaunchOpts) (int, error) {
+func startCloudHypervisor(id, apiSock, disk, appsDisk, logPath, tapDev, mac string, nics []NicRecord, opts LaunchOpts) (int, error) {
 	logF, err := os.Create(logPath)
 	if err != nil {
 		return 0, fmt.Errorf("open log: %w", err)
 	}
-
-	netArg := fmt.Sprintf("tap=%s,mac=%s", tapDev, mac)
 
 	disks := []string{"path=" + disk + ",image_type=raw"}
 	// The artifacts disk is shared read-only across the fleet, so many VMs can
@@ -177,26 +194,7 @@ func startCloudHypervisor(apiSock, disk, appsDisk, logPath, tapDev, mac string, 
 		disks = append(disks, "path="+appsDisk+",image_type=raw,readonly=on")
 	}
 
-	args := []string{
-		"--api-socket", apiSock,
-		"--kernel", KernelPath,
-		"--initramfs", InitrdPath,
-		"--cmdline", GuestCmdline,
-		"--disk",
-	}
-	args = append(args, disks...)
-	args = append(args,
-		"--net", netArg,
-		"--cpus", fmt.Sprintf("boot=%d", opts.cpus()),
-		"--memory", "size="+opts.memory(),
-		// A pty, not socket=: cloud-hypervisor never reaps a disconnected
-		// serial socket client, so after one `vm shell` detaches the console
-		// is dead for every later client. A pty can be reopened repeatedly.
-		"--serial", "pty",
-		"--console", "off",
-	)
-
-	cmd := exec.Command("cloud-hypervisor", args...)
+	cmd := exec.Command("cloud-hypervisor", chArgs(id, apiSock, disks, tapDev, mac, nics, opts)...)
 	cmd.Stdout = logF
 	cmd.Stderr = logF
 	// Setsid so the VM survives plasmad restart.
@@ -211,6 +209,42 @@ func startCloudHypervisor(apiSock, disk, appsDisk, logPath, tapDev, mac string, 
 		logF.Close()
 	}()
 	return cmd.Process.Pid, nil
+}
+
+// chArgs is cloud-hypervisor's command line. The management NIC is listed
+// first and link NICs follow in order: the guest names NICs in the order they
+// are attached, which is what makes eth0 the management NIC and a declared
+// eth2 the guest's eth2.
+func chArgs(id, apiSock string, disks []string, tapDev, mac string, nics []NicRecord, opts LaunchOpts) []string {
+	nets := []string{fmt.Sprintf("tap=%s,mac=%s", tapDev, mac)}
+	for _, n := range nics {
+		nets = append(nets, fmt.Sprintf("tap=%s,mac=%s", n.Tap, n.MAC))
+	}
+
+	cmdline := GuestCmdline
+	if len(nics) > 0 {
+		cmdline += " " + linkNetworkCredential(nics) + " " + linkInfoCredential(id, nics)
+	}
+
+	args := []string{
+		"--api-socket", apiSock,
+		"--kernel", KernelPath,
+		"--initramfs", InitrdPath,
+		"--cmdline", cmdline,
+		"--disk",
+	}
+	args = append(args, disks...)
+	args = append(args, "--net")
+	args = append(args, nets...)
+	return append(args,
+		"--cpus", fmt.Sprintf("boot=%d", opts.cpus()),
+		"--memory", "size="+opts.memory(),
+		// A pty, not socket=: cloud-hypervisor never reaps a disconnected
+		// serial socket client, so after one `vm shell` detaches the console
+		// is dead for every later client. A pty can be reopened repeatedly.
+		"--serial", "pty",
+		"--console", "off",
+	)
 }
 
 // shareConsolePTY asks cloud-hypervisor which pty it allocated for the guest
@@ -329,6 +363,7 @@ func Delete(id string, state *State) (VmRecord, error) {
 
 	stopProcess(rec.PID)
 	teardownNetwork(rec.TapDevice)
+	teardownNics(rec.Nics)
 	os.RemoveAll(filepath.Join(VMsDir, rec.ID))
 	os.Remove(rec.DiskPath)
 	if rec.AppsDisk != "" {
@@ -369,5 +404,99 @@ func teardownNetwork(tapDev string) {
 	hostFile := filepath.Join(DnsmasqHostsDir, tapDev)
 	if os.Remove(hostFile) == nil {
 		reloadDnsmasq()
+	}
+}
+
+// planNics names the taps and MACs for a VM's link NICs. Pure, so a launch
+// can fail on a bad request before anything is created on the host.
+func planNics(ip string, specs []NicSpec) ([]NicRecord, error) {
+	if len(specs) == 0 {
+		return nil, nil
+	}
+	octet, err := ipOctet(ip)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]NicRecord, 0, len(specs))
+	for _, n := range specs {
+		idx, _ := nicIndex(n.Name) // ValidateNics has vouched for the name
+		tap := n.HostName
+		if tap == "" {
+			tap = NicTapName(octet, n.Name)
+		}
+		out = append(out, NicRecord{Name: n.Name, Tap: tap, MAC: NicMAC(octet, idx), Bridge: n.Bridge, Address: n.Address})
+	}
+	return out, nil
+}
+
+// setupNics creates each link NIC's tap and, unless it is a host endpoint,
+// attaches it to its link bridge, creating the bridge on first use. Unlike
+// plasma-br0 these are pure L2 segments: no address, no DHCP, and IPv6 off on
+// the bridge and the taps, so the host itself never puts a frame (router
+// solicitations, MLD) on a link — what crosses it is only what the VMs send.
+func setupNics(nics []NicRecord) error {
+	for _, n := range nics {
+		if n.Bridge == "" {
+			// A host endpoint's name is the caller's choice; refuse to adopt
+			// an interface that already exists rather than hijack it.
+			if _, err := os.Stat(filepath.Join("/sys/class/net", n.Tap)); err == nil {
+				return fmt.Errorf("%s: host interface %s already exists", n.Name, n.Tap)
+			}
+		} else if err := ensureLinkBridge(n.Bridge); err != nil {
+			return err
+		}
+		if out, err := exec.Command("ip", "tuntap", "add", "name", n.Tap, "mode", "tap").CombinedOutput(); err != nil {
+			return fmt.Errorf("%s: create tap %s: %v: %s", n.Name, n.Tap, err, out)
+		}
+		disableIPv6(n.Tap)
+		if n.Bridge != "" {
+			if out, err := exec.Command("ip", "link", "set", n.Tap, "master", n.Bridge).CombinedOutput(); err != nil {
+				return fmt.Errorf("%s: attach %s to %s: %v: %s", n.Name, n.Tap, n.Bridge, err, out)
+			}
+		}
+		if out, err := exec.Command("ip", "link", "set", n.Tap, "up").CombinedOutput(); err != nil {
+			return fmt.Errorf("%s: up %s: %v: %s", n.Name, n.Tap, err, out)
+		}
+	}
+	return nil
+}
+
+// ensureLinkBridge creates a link bridge if it is not already there; the
+// second VM on a segment finds the first one's.
+func ensureLinkBridge(br string) error {
+	if _, err := os.Stat(filepath.Join("/sys/class/net", br)); err == nil {
+		return nil
+	}
+	if out, err := exec.Command("ip", "link", "add", "name", br, "type", "bridge",
+		"stp_state", "0", "mcast_snooping", "0").CombinedOutput(); err != nil {
+		return fmt.Errorf("create bridge %s: %v: %s", br, err, out)
+	}
+	disableIPv6(br)
+	if out, err := exec.Command("ip", "link", "set", br, "up").CombinedOutput(); err != nil {
+		return fmt.Errorf("up bridge %s: %v: %s", br, err, out)
+	}
+	return nil
+}
+
+// disableIPv6 stops the kernel giving an interface a link-local address.
+// Best-effort: a host without IPv6 has nothing to disable.
+func disableIPv6(iface string) {
+	os.WriteFile(filepath.Join("/proc/sys/net/ipv6/conf", iface, "disable_ipv6"), []byte("1"), 0o644)
+}
+
+// teardownNics removes a VM's link taps, then any link bridge they leave
+// without ports. Best-effort, like teardownNetwork.
+func teardownNics(nics []NicRecord) {
+	for _, n := range nics {
+		exec.Command("ip", "link", "del", n.Tap).Run()
+	}
+	for _, n := range nics {
+		if n.Bridge == "" || !isLinkBridge(n.Bridge) {
+			continue
+		}
+		ports, err := os.ReadDir(filepath.Join("/sys/class/net", n.Bridge, "brif"))
+		if err == nil && len(ports) == 0 {
+			exec.Command("ip", "link", "del", n.Bridge).Run()
+		}
 	}
 }

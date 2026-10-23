@@ -104,7 +104,7 @@ func (s *Server) handleLaunch(w http.ResponseWriter, r *http.Request) {
 	if req.ID != "" {
 		// A topology file names its nodes, so the ID comes from the caller
 		// rather than the <group>-N allocator.
-		rec, err = LaunchNamed(req.ID, req.Group, LaunchOpts{CPUs: req.CPUs, Memory: req.Memory, Apps: req.Apps}, s.state)
+		rec, err = LaunchNamed(req.ID, req.Group, LaunchOpts{CPUs: req.CPUs, Memory: req.Memory, Apps: req.Apps, Nics: req.Nics}, s.state)
 	} else {
 		rec, err = Launch(req.Group, s.state)
 	}
@@ -125,9 +125,9 @@ func (s *Server) handleList(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(ListResponse{VMs: s.state.List()})
 }
 
-// handleSetLinks records the links an applied topology declared. They are not
-// wired to anything yet — every VM still has one NIC on the shared bridge —
-// but persisting them lets the UI draw the intended topology.
+// handleSetLinks records the links an applied topology declared. The wiring
+// itself arrived with each VM's launch (LaunchRequest.Nics); the declared form
+// lets /v1/topology still report a link whose VM is not running.
 func (s *Server) handleSetLinks(w http.ResponseWriter, r *http.Request) {
 	var doc LinksDocument
 	if err := json.NewDecoder(r.Body).Decode(&doc); err != nil {

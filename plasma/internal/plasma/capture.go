@@ -60,17 +60,35 @@ var ErrNotRunning = errors.New("VM is not running")
 var ErrBadFilter = errors.New("invalid capture filter")
 
 // ResolveCaptureTarget maps a capture target to a host interface name. The
-// target is either a VM ID or CaptureAllTarget for the bridge.
+// target is a VM ID (its management tap), "<id>:<ethN>" for one of its link
+// NICs, a link bridge some running VM is on, or CaptureAllTarget for the
+// management bridge.
 func ResolveCaptureTarget(target string, state *State) (string, error) {
 	if target == CaptureAllTarget {
 		return Bridge, nil
 	}
+	id, nic, hasNic := strings.Cut(target, ":")
 	for _, v := range state.List() {
-		if v.ID != target {
+		if !hasNic && v.Status == StatusRunning && isLinkBridge(target) {
+			for _, n := range v.Nics {
+				if n.Bridge == target {
+					return target, nil
+				}
+			}
+		}
+		if v.ID != id {
 			continue
 		}
 		if v.Status != StatusRunning {
 			return "", fmt.Errorf("%w: %s is %s", ErrNotRunning, v.ID, v.Status)
+		}
+		if hasNic {
+			for _, n := range v.Nics {
+				if n.Name == nic {
+					return n.Tap, nil
+				}
+			}
+			return "", fmt.Errorf("%w: %s has no link NIC %s", ErrNotFound, v.ID, nic)
 		}
 		// TapDevice was added after the first records were written; derive it
 		// for anything persisted before that.

@@ -73,8 +73,11 @@ func runTopology(path string) error {
 		name = filepath.Base(path)
 	}
 	fmt.Printf("topology %s: %d node(s)", name, len(topo.Nodes))
+	if len(topo.Bridges) > 0 {
+		fmt.Printf(", %d bridge(s)", len(topo.Bridges))
+	}
 	if len(topo.Links) > 0 {
-		fmt.Printf(", %d declared link(s)", len(topo.Links))
+		fmt.Printf(", %d link(s)", len(topo.Links))
 	}
 	fmt.Println()
 
@@ -83,7 +86,7 @@ func runTopology(path string) error {
 	var failed []string
 	for _, n := range topo.Nodes {
 		rec, err := c.LaunchSpec(plasma.LaunchRequest{
-			ID: n.ID, Group: n.Group, CPUs: n.CPUs, Memory: n.Memory, Apps: n.Apps,
+			ID: n.ID, Group: n.Group, CPUs: n.CPUs, Memory: n.Memory, Apps: n.Apps, Nics: n.Nics,
 		})
 		if err != nil {
 			fmt.Printf("  %-12s FAILED  %v\n", n.ID, err)
@@ -95,17 +98,22 @@ func runTopology(path string) error {
 		for _, a := range n.Apps {
 			fmt.Printf("  %-12s   %s app %s <- %s\n", "", a.Type, a.Name, a.Path)
 		}
+		for _, nic := range rec.Nics {
+			to := nic.Bridge
+			if to == "" {
+				to = "host (unbridged)"
+			}
+			if nic.Address != "" {
+				to += "  " + nic.Address
+			}
+			fmt.Printf("  %-12s   %s %s  %s -> %s\n", "", nic.Name, nic.MAC, nic.Tap, to)
+		}
 	}
 
-	// Record the declared links even on partial failure, so the UI reflects
+	// Record the declared links even on partial failure, so /v1/topology reflects
 	// what the file asked for.
 	if err := c.SetLinks(plasma.LinksDocument{Topology: name, Links: topo.Links}); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: could not record links: %v\n", err)
-	}
-	if len(topo.Links) > 0 {
-		fmt.Printf("\n%d link(s) recorded. Note: links are not wired yet — every VM has one\n"+
-			"NIC on %s. Per-link segments arrive with the router/switch/nat kinds.\n",
-			len(topo.Links), plasma.Bridge)
 	}
 
 	if len(failed) > 0 {
@@ -144,14 +152,29 @@ func listCmd() *cobra.Command {
 				return err
 			}
 			tw := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-			fmt.Fprintln(tw, "ID\tGROUP\tSTATUS\tIP\tPID\tUPTIME")
+			fmt.Fprintln(tw, "ID\tGROUP\tSTATUS\tIP\tLINKS\tPID\tUPTIME")
 			for _, v := range vms {
-				fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%d\t%s\n",
-					v.ID, v.Group, v.Status, v.IP, v.PID, uptime(v.StartedAt))
+				fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%d\t%s\n",
+					v.ID, v.Group, v.Status, v.IP, linkAddresses(v.Nics), v.PID, uptime(v.StartedAt))
 			}
 			return tw.Flush()
 		},
 	}
+}
+
+// linkAddresses is the LINKS column: each addressed link NIC as
+// name=address, e.g. "eth1=10.78.0.1 eth2=10.77.0.1"; "-" when there are none.
+func linkAddresses(nics []plasma.NicRecord) string {
+	var out []string
+	for _, n := range nics {
+		if n.Address != "" {
+			out = append(out, n.Name+"="+strings.SplitN(n.Address, "/", 2)[0])
+		}
+	}
+	if len(out) == 0 {
+		return "-"
+	}
+	return strings.Join(out, " ")
 }
 
 func deleteCmd() *cobra.Command {
@@ -219,7 +242,9 @@ func captureCmd() *cobra.Command {
 			"  plasma vm capture host-1 --wireshark\n" +
 			"  plasma vm capture host-1 | wireshark -k -i -\n" +
 			"  plasma vm capture host-1 -f icmp -w icmp.pcap\n" +
-			"  plasma vm capture " + plasma.CaptureAllTarget + "   # the whole bridge, not one VM",
+			"  plasma vm capture " + plasma.CaptureAllTarget + "   # the whole bridge, not one VM\n" +
+			"  plasma vm capture node1:eth2   # one link NIC's tap\n" +
+			"  plasma vm capture pbr-wire     # a whole link segment",
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cmd.SilenceUsage = true

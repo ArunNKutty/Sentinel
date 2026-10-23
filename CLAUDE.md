@@ -65,7 +65,7 @@ build plan for now.
 - **Packet capture:** `plasmad` runs `tcpdump` on a VM's host-side tap and
   streams pcap over the same socket, so operators capture without `sudo`.
   Surfaced as `plasma vm capture`, a Wireshark extcap plugin (`plasma-extcap`,
-  VMs appear in Wireshark's interface list), and the topology UI. Unlike
+  VMs appear in Wireshark's interface list). Unlike
   containerlab there is no `ip netns exec` step — VM taps are already on the
   host. **Filters are passed to tcpdump via `-F <file>`, never argv**, because
   `-z` would otherwise be a root RCE vector in a root daemon.
@@ -90,12 +90,22 @@ build plan for now.
   containerlab-shaped YAML (`topologies/ne-lab.yaml`). Same sections and the
   same `node -> group -> kind -> defaults` resolution; three deliberate
   differences: `count` expands one entry into a fleet (containerlab has none),
-  `apps` deploy per-node payloads (next bullet), and `links` are **validated
-  and recorded but not wired** — every VM still has one NIC on `plasma-br0`, so
-  declared links render dashed in the UI until the router/switch/NAT kinds
-  create real L2 segments. The node key becomes the VM
-  ID; `kind: vm` is the only kind accepted today. This is the concrete first
-  step of M4.7's Topology DSL.
+  `apps` deploy per-node payloads (next bullet), and `links` are **wired**:
+  each becomes a NIC (`eth1` upward, in order; `eth0` stays the management NIC
+  on `plasma-br0`). VM↔VM links get a private bridge `plk-<hash>`; a
+  `kind: bridge` node is a shared bridge `pbr-<name>` (no VM is launched for
+  it); `host:<ifname>` leaves the tap unbridged under that name. Link
+  segments are pure L2 — no address, DHCP or IPv6 on the host side; in the
+  guest, link NICs are networkd-`Unmanaged` (a kernel-cmdline credential), so
+  they boot down and unaddressed and the apps configure them. A bridge with
+  `subnet:` gets its VM NICs addresses allocated by the CLI at resolve time
+  (lowest free, node order; `ipv4:` on an endpoint pins one); a link naming a
+  counted node expands to every member. Addresses persist in `NicRecord`,
+  show in `plasma vm list` (LINKS), are refused if already held on that bridge,
+  and reach the guest as the `plasma.nics` system credential. Tap is
+  `pt<octet>-ethN`, MAC `02:00:0b:00:<N>:<octet>`. The node key becomes the
+  VM ID; `vm` and `bridge` are the kinds accepted today. This is the concrete
+  first step of M4.7's Topology DSL.
 - **Per-node applications:** a node (or group) can declare `apps:` — a list of
   `name` / `type` / `path` / `cmd`. `type` is `kernel` (a `.ko` the guest
   insmods) or `userspace` (a program it runs: Go binary, Python script, …);
@@ -118,10 +128,9 @@ build plan for now.
   per-node, distinct from the fleet-wide artifacts disk above; the two coexist
   on the same VM. Changing the bootstrap means re-running
   `scripts/app-prep.sh` against the base rootfs.
-- **Topology UI:** `plasma-ui/` — standalone Next.js + React Flow dev tool
-  (distinct from Fabric). Its server reaches plasmad over the unix socket, so
-  the daemon needs no TCP listener; the UI process must be in the `plasma`
-  group and binds 127.0.0.1 only.
+- **Topology files are the interface for bringing up labs** (there is no
+  plasma web UI). `GET /v1/topology` on the socket still reports the wiring as
+  a graph — planes, nodes, links — for scripts or a future front end.
 - **CLI:** `plasma vm list/shell/exec/cp/logs`, fleet ops, image factory, module push.
 - **Networking:** Linux bridges + TAP pairs per VM. Three planes:
   - **Data plane** — protected endpoints connect to each other in a

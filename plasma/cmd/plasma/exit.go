@@ -200,6 +200,10 @@ func removeHostState() error {
 	// The bridge can only go once its taps are gone, which VM deletion above
 	// has already handled.
 	fmt.Fprintf(&b, "ip link del %s 2>/dev/null || true\n", plasma.Bridge)
+	// Link bridges normally go with their last VM; these are leftovers from
+	// a VM whose state was lost.
+	fmt.Fprintf(&b, "for br in /sys/class/net/%s* /sys/class/net/%s*; do [ -e \"$br\" ] && ip link del \"${br##*/}\"; done; true\n",
+		plasma.LinkBridgePrefix, plasma.NodeBridgePrefix)
 	fmt.Fprintf(&b, "rm -rf %s\n", plasma.RunDir)
 	fmt.Fprintf(&b, "rm -f %s %s %s\n", plasma.SocketPath, plasma.StateFile, plasma.LinksFile)
 	fmt.Fprintf(&b, "rm -f %s\n", plasma.DnsmasqPidFile)

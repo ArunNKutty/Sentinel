@@ -12,7 +12,6 @@ Network Encryptor (NE) product at fleet scale.
 | **Get a shell ready** | **`plasma init`** |
 | **Destroy everything** | **`plasma exit`** |
 | Start the daemon | `sudo plasmad &` |
-| Start the UI | `cd plasma-ui && npm run dev` → http://127.0.0.1:7080 |
 | Create a VM | `plasma vm launch host` |
 | Bring up a topology | `plasma vm --topology ./topologies/ne-lab.yaml` |
 | List VMs | `plasma vm list` |
@@ -34,7 +33,6 @@ Network Encryptor (NE) product at fleet scale.
 
 Optional, for the packet-capture tooling:
 - `wireshark` — for live capture and the Wireshark plugin
-- Node.js 18+ and npm — for the topology UI
 
 ---
 
@@ -62,7 +60,7 @@ newgrp plasma          # or log out and back in
 ```
 Installs `plasma`, `plasmad` and `plasma-extcap` to `/usr/local/bin`, creates
 the `plasma` group, and adds you to it. **That group membership is what lets
-the CLI and UI talk to the daemon without `sudo`** — nothing works until it
+the CLI talks to the daemon without `sudo`** — nothing works until it
 applies.
 
 ### 3. Guest kernel version
@@ -78,7 +76,6 @@ out-of-tree modules afterwards with `cd applications && make`.
 ### 4. Optional extras
 ```bash
 sudo make install-extcap    # Wireshark plugin: VMs in the interface list
-cd ../plasma-ui && npm install
 sudo make install-service   # run plasmad under systemd instead of by hand
 ```
 
@@ -140,28 +137,8 @@ means re-running `m1-prep.sh` / `kernel-swap.sh` / `applications && make`.
 ```bash
 sudo plasmad &
 ```
-Root is needed for taps and VM processes; the CLI and UI are not. Skip this if
+Root is needed for taps and VM processes; the CLI is not. Skip this if
 you ran `plasma init` or installed the systemd service.
-
-### Start the UI
-```bash
-cd plasma && make ui-dev        # http://127.0.0.1:7080
-```
-`make ui-dev` runs the server under `sg plasma`, so it works even if your shell
-session predates the group. Plain `npm run dev` from `plasma-ui/` works too —
-but only once `id -nG` actually lists `plasma` (see Troubleshooting).
-
-The UI reaches `plasmad` over the same unix socket the CLI uses, so the daemon
-needs no network listener. Two consequences: the process running the UI **must
-be in the `plasma` group**, and it binds `127.0.0.1` only — anyone who can
-reach it inherits your plasma-group access.
-
-**Viewing it over SSH.** The UI is bound to loopback, so forward the port
-rather than exposing it — in VS Code use the **PORTS** panel, or from a
-terminal:
-```bash
-ssh -L 7080:127.0.0.1:7080 <user>@<host>     # then browse 127.0.0.1:7080 locally
-```
 
 ---
 
@@ -180,11 +157,16 @@ Bring up a whole lab in one command, containerlab-style:
 plasma vm --topology ./topologies/ne-lab.yaml
 ```
 ```
-topology ne-lab: 5 node(s), 3 declared link(s)
+topology ne-lab: 5 node(s), 3 link(s)
   host-a       host      10.0.0.2  (2 cpu, 1024M)
+               eth1 02:00:0b:00:01:02  pt2-eth1 -> plk-…
   host-b       host      10.0.0.3  (2 cpu, 1024M)
+               eth1 02:00:0b:00:01:03  pt3-eth1 -> plk-…
   ne-00        ne        10.0.0.4  (2 cpu, 1536M)
+               eth1 02:00:0b:00:01:04  pt4-eth1 -> plk-…
+               eth2 02:00:0b:00:02:04  pt4-eth2 -> plk-…
   ne-01        ne        10.0.0.5  (2 cpu, 1536M)
+               …
   ne-02        ne        10.0.0.6  (2 cpu, 1536M)
 ```
 See [`topologies/ne-lab.yaml`](topologies/ne-lab.yaml) for the full format. In
@@ -209,15 +191,65 @@ topology:
 - The **node key becomes the VM ID**, so `ne-00` above is `plasma vm shell ne-00`.
 - **`count`** expands one entry into a fleet (a plasma addition; containerlab
   has no such field), named exactly as the auto-allocator would.
-- **`kind: vm`** is the only kind today; `router`/`switch`/`nat` are rejected
-  with a clear error until they land.
+- **`kind: vm`** boots a VM; **`kind: bridge`** is a shared L2 segment (see
+  links below). `router`/`switch`/`nat` are rejected with a clear error until
+  they land.
 - Node IDs are capped at 11 characters so tap names (`tap-<id>`, 15 bytes max)
   stay unique.
 
-> **`links:` are declared, not wired.** They are validated against the declared
-> nodes and drawn in the topology UI as dashed amber edges, but every VM still
-> has a single NIC on `plasma-br0`. Real per-link L2 segments arrive with the
-> router/switch/NAT kinds.
+**Links are real NICs.** `eth0` is always the management NIC on `plasma-br0`;
+each link adds the next one, and a VM's link interfaces must be `eth1`,
+`eth2`, ... with no gaps, because the guest names NICs in the order they are
+attached. Three endpoint shapes:
+
+```yaml
+  nodes:
+    a: {}
+    b: {}
+    c: {}
+    lan: {kind: bridge}                 # host bridge pbr-lan, no VM
+  links:
+    - endpoints: ["a:eth1", "b:eth1"]   # private bridge plk-<hash> for the pair
+    - endpoints: ["a:eth2", "lan:a"]    # joins pbr-lan; ":a" is only a label
+    - endpoints: ["b:eth2", "lan:b"]
+    - endpoints: ["c:eth1", "lan:c"]
+    - endpoints: ["c:eth2", "host:cap0"] # unbridged host tap named cap0
+```
+
+**Addresses.** Give a bridge a `subnet` and plasma allocates every VM NIC on
+it an address; nothing is written per node. A link can name a counted node
+to wire the whole fleet in one line, and `ipv4:` pins one end (a service at a
+well-known address):
+
+```yaml
+  nodes:
+    svc: {}
+    node: {count: 100}
+    lan: {kind: bridge, subnet: 10.77.0.0/24}
+  links:
+    - endpoints: [{node: svc, interface: eth1, ipv4: 10.77.0.254}, "lan:svc"]
+    - endpoints: ["node:eth1", "lan:node"]   # node-1 .. node-100, eth1 each
+```
+
+Allocation is deterministic: lowest free host address, in node order (a
+count's members in ordinal order), so node-k gets .k here. `plasma vm list`
+shows each VM's addresses in its LINKS column, and the guest reads its own from
+`/run/credentials/@system/plasma.nics` (`vm <id>`, then `<nic> <bridge> <addr>`
+per line). plasma records and hands out the addresses; configuring them on the
+NIC is the application's job, as with everything on a link.
+
+Link segments are pure L2: the host has no address on them, runs no DHCP
+there and has IPv6 off, so what crosses a link is only what the VMs send.
+In the guest, link NICs are left to the applications: plasma marks them
+`Unmanaged=yes` for systemd-networkd (a `network.network.10-plasma-links`
+credential on the kernel command line), so they boot down and unaddressed and
+the base image's DHCP never touches them — or holds up `network-online.target`
+waiting for a lease no link will hand out.
+Capture one with `plasma vm capture <id>:eth2` (that NIC's tap) or
+`plasma vm capture pbr-lan` (the whole segment). If the host loads
+`br_netfilter` with a `DROP` FORWARD policy, bridged link traffic is filtered
+too: accept it with e.g.
+`iptables -I FORWARD -m physdev --physdev-is-bridged -j ACCEPT`.
 
 Re-applying a topology whose VMs already exist fails per node rather than
 duplicating them; `plasma down` first to start clean.
@@ -270,22 +302,6 @@ after `plasma down`; stop it with `sudo pkill -x plasmad`.
 Each VM's link terminates in a host-side tap (`tap-host-1`) on `plasma-br0`, so
 `plasmad` captures there and streams the pcap back. **No `sudo` needed** — only
 the `plasma` group.
-
-### From the UI
-1. Start the daemon and the UI, then open http://127.0.0.1:7080.
-2. The topology draws `plasma-br0` with every VM hanging off it — each node
-   showing status, IP, tap and uptime.
-3. Optionally type a BPF filter (e.g. `icmp`) in the header box; it applies to
-   whatever you click next.
-4. On any VM node press:
-   - **Wireshark** — opens a live capture on your desktop
-   - **.pcap** — streams a download (cancel the download to stop the capture)
-   - **Copy** — copies the equivalent `plasma vm capture` command
-
-> **The Wireshark button needs a graphical session.** The UI server spawns
-> Wireshark as you, so over plain SSH it returns *"No graphical display
-> detected"*. Use `ssh -X`, run the UI on the machine you're sitting at, or
-> fall back to `plasma vm capture <id> --wireshark`.
 
 ### From the CLI
 ```bash
@@ -370,7 +386,6 @@ their kernel-supplied device IDs. See
 | `no access to /var/run/plasma.sock` | Your **session** predates the group. Run `plasma init` — it starts a shell that has it (or `newgrp plasma` / re-login) |
 | `plasmad is not running` | Run `plasma init`, or start it by hand: `sudo plasmad &` |
 | CLI: *"could not connect to display"* / Qt platform plugin error | `--wireshark` needs a GUI session. Over SSH, pipe to a local Wireshark instead — see "Over SSH" above |
-| UI: *"No graphical display detected"* | Same cause, caught before a capture starts. Use the **.pcap** button, or the SSH pipe |
 | `plasma: unknown command "capture"` | Stale binary — re-run `sudo make install` |
 | `disk already exists` on launch | `state.json` and the runtime disk are out of sync |
 | Ctrl-C won't exit `vm shell` | Use **Ctrl-X**; Ctrl-C goes to the guest |
@@ -417,7 +432,6 @@ Host (10.0.0.1)  ←→  plasma-br0  ←→  host-1 (10.0.0.2)
 | `/var/run/plasma.sock`               | Control socket, `root:plasma` 0660 |
 | `/usr/local/bin/{plasma,plasmad,plasma-extcap}` | Installed binaries |
 | `~/.config/wireshark/extcap/plasma-extcap` | Wireshark capture plugin |
-| `plasma-ui/`                         | Topology + capture web UI   |
 
 ---
 

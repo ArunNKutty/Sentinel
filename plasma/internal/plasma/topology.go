@@ -7,11 +7,10 @@ import (
 	"strings"
 )
 
-// Topology is the fleet's wiring as the UI draws it. Today every VM hangs off
-// a single bridge, so the graph is a star. The shape (planes / nodes / links
-// rather than a flat VM list) anticipates M4.7, where planes become real
-// (data, control, management), routers and NATs join as host-side constructs,
-// and NEs sit as bumps on the links — none of which fits a flat list.
+// Topology is the fleet's wiring as /v1/topology reports it. Every VM hangs off the
+// management bridge, and each link a topology wired adds a plane of its own:
+// a link bridge, or a host endpoint's unbridged tap. Routers and NATs join as
+// host-side constructs in M4.7.
 
 type Topology struct {
 	Planes []Plane `json:"planes"`
@@ -30,7 +29,7 @@ type Plane struct {
 	// CaptureTarget is what to pass to `plasma vm capture` for this plane.
 	CaptureTarget string `json:"capture_target"`
 	// CaptureNote records that a bridge capture is not a fleet-wide mirror, so
-	// the UI can say so rather than implying it sees everything.
+	// a reader can say so rather than implying it sees everything.
 	CaptureNote string `json:"capture_note"`
 }
 
@@ -57,7 +56,7 @@ type Link struct {
 	Plane string `json:"plane"`
 	// Wired distinguishes links that exist in the kernel (a VM's tap on the
 	// bridge) from ones a topology file merely declared. Declared links have
-	// no L2 segment of their own yet, and the UI must not imply otherwise.
+	// no L2 segment of their own yet, and a reader must not imply otherwise.
 	Wired bool `json:"wired"`
 	// Label carries the declared interface pair, e.g. "eth1 <-> eth1".
 	Label string `json:"label,omitempty"`
@@ -81,6 +80,9 @@ func BuildTopology(state *State, now func() int64, declared LinksDocument) Topol
 	}
 
 	vms := state.List()
+	// wired is keyed "vm:ethN" for every link NIC of a running VM.
+	wired := make(map[string]bool)
+	seenPlane := make(map[string]bool)
 	topo := Topology{
 		Planes: []Plane{plane},
 		Nodes:  make([]Node, 0, len(vms)),
@@ -122,12 +124,39 @@ func BuildTopology(state *State, now func() int64, declared LinksDocument) Topol
 			Plane: defaultPlane,
 			Wired: true,
 		})
+
+		for _, n := range v.Nics {
+			wired[v.ID+":"+n.Name] = running
+			if !running {
+				continue
+			}
+			to := n.Bridge
+			if to == "" {
+				to = n.Tap
+			}
+			if !seenPlane[to] {
+				seenPlane[to] = true
+				topo.Planes = append(topo.Planes, linkPlane(v.ID, n))
+			}
+			topo.Links = append(topo.Links, Link{
+				From:  v.ID,
+				To:    to,
+				Via:   n.Tap,
+				Plane: to,
+				Wired: true,
+				Label: strings.TrimSpace(n.Name + " " + n.Address),
+			})
+		}
 	}
 
-	// Overlay whatever the last applied topology file declared. These are
-	// intent, not kernel state, so they are marked unwired.
+	// Overlay what the last applied topology file declared, for links whose
+	// VM end is not wired (not running, or never launched). These are intent,
+	// not kernel state, so they are marked unwired.
 	topo.Declared = declared.Topology
 	for _, d := range declared.Links {
+		if wired[d.ANode+":"+d.AInterface] || wired[d.BNode+":"+d.BInterface] {
+			continue
+		}
 		topo.Links = append(topo.Links, Link{
 			From:  d.ANode,
 			To:    d.BNode,
@@ -138,6 +167,25 @@ func BuildTopology(state *State, now func() int64, declared LinksDocument) Topol
 	}
 
 	return topo
+}
+
+// linkPlane describes the segment behind a link NIC, as first seen from VM id.
+func linkPlane(id string, n NicRecord) Plane {
+	if n.Bridge == "" {
+		return Plane{
+			Name:          "host:" + n.Tap,
+			Bridge:        n.Tap,
+			CaptureTarget: id + ":" + n.Name,
+			CaptureNote:   "An unbridged host tap: its only traffic is " + id + "'s " + n.Name + ".",
+		}
+	}
+	return Plane{
+		Name:          n.Bridge,
+		Bridge:        n.Bridge,
+		CaptureTarget: n.Bridge,
+		CaptureNote: "A link bridge: capturing on it sees every frame between the VMs on this " +
+			"segment, since none of them is addressed to the host.",
+	}
 }
 
 // SaveLinks persists the links an applied topology declared.

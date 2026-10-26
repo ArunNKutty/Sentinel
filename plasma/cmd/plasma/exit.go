@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
@@ -30,10 +31,11 @@ func exitCmd() *cobra.Command {
 		Use:   "exit",
 		Short: "Tear down the fleet and all plasma runtime state",
 		Long: "Destroy everything `plasma init` and the daemon create at runtime:\n" +
-			"every VM, its disk and tap, the bridge, dnsmasq, the recorded topology,\n" +
-			"the saved state, and plasmad itself.\n\n" +
+			"every lab and VM, their disks and taps, the bridges, dnsmasq, the recorded\n" +
+			"topology, the saved state, and plasmad itself.\n\n" +
 			"Kept, because they are build artifacts rather than session state:\n" +
-			"  the base image, the guest kernel/initrd, and the applications disk.\n\n" +
+			"  the base image, the guest kernel/initrd, the applications disk, the\n" +
+			"  artifact cache, and the engine's TLS certificate and token.\n\n" +
 			"After this, `plasma init` starts from a clean slate.",
 		Args: cobra.NoArgs,
 		RunE: func(c *cobra.Command, _ []string) error {
@@ -51,18 +53,31 @@ func runExit(yes bool) error {
 	// Ask the daemon first: deleting through it frees taps, disks and DHCP
 	// reservations properly, which a plain kill would leave behind.
 	var vms []plasma.VmRecord
+	var labs []plasma.LabStatus
 	c := plasma.NewClient(plasma.SocketPath)
 	if daemonState() == daemonUp {
 		vms, _ = c.List()
+		labs, _ = c.Labs(context.Background())
 	}
-	strays := plasmaProcesses("cloud-hypervisor", plasma.VMsDir)
+	strays := plasmaProcesses("cloud-hypervisor", plasma.RunDir)
 
 	if !yes && !confirmExit(len(vms), len(strays)) {
 		fmt.Println("cancelled.")
 		return nil
 	}
 
+	// A lab's VMs go with the lab, which also frees its network.
+	for _, l := range labs {
+		if err := c.DeleteLab(context.Background(), l.ID); err != nil {
+			report(checkWarn, "lab "+l.ID, err.Error())
+			continue
+		}
+		report(checkOK, "lab "+l.ID, fmt.Sprintf("deleted with its %d VM(s)", len(l.VMs)))
+	}
 	for _, v := range vms {
+		if v.Lab != "" {
+			continue
+		}
 		if err := c.Delete(v.ID); err != nil {
 			report(checkWarn, "vm "+v.ID, err.Error())
 			continue
@@ -72,7 +87,7 @@ func runExit(yes bool) error {
 
 	// Anything still alive here was orphaned by a lost state file, so the
 	// daemon no longer knows about it.
-	if strays = plasmaProcesses("cloud-hypervisor", plasma.VMsDir); len(strays) > 0 {
+	if strays = plasmaProcesses("cloud-hypervisor", plasma.RunDir); len(strays) > 0 {
 		if err := sudoKill(strays); err != nil {
 			report(checkWarn, "orphan VMs", err.Error())
 		} else {
@@ -191,7 +206,8 @@ func stopDaemon() error {
 // removeHostState clears everything else in one privileged step, so the user
 // is prompted for a password at most once.
 func removeHostState() error {
-	dnsmasq := plasmaProcesses("dnsmasq", plasma.Bridge)
+	// Matches plasma-br0 and every lab's plasma-br<N>.
+	dnsmasq := plasmaProcesses("dnsmasq", "--interface=plasma-br")
 
 	var b strings.Builder
 	for _, p := range dnsmasq {
@@ -200,12 +216,14 @@ func removeHostState() error {
 	// The bridge can only go once its taps are gone, which VM deletion above
 	// has already handled.
 	fmt.Fprintf(&b, "ip link del %s 2>/dev/null || true\n", plasma.Bridge)
+	fmt.Fprintf(&b, "for br in /sys/class/net/plasma-br[1-9]*; do [ -e \"$br\" ] && ip link del \"${br##*/}\"; done; true\n")
 	// Link bridges normally go with their last VM; these are leftovers from
 	// a VM whose state was lost.
 	fmt.Fprintf(&b, "for br in /sys/class/net/%s* /sys/class/net/%s*; do [ -e \"$br\" ] && ip link del \"${br##*/}\"; done; true\n",
 		plasma.LinkBridgePrefix, plasma.NodeBridgePrefix)
 	fmt.Fprintf(&b, "rm -rf %s\n", plasma.RunDir)
-	fmt.Fprintf(&b, "rm -f %s %s %s\n", plasma.SocketPath, plasma.StateFile, plasma.LinksFile)
+	fmt.Fprintf(&b, "rm -f %s %s %s %s\n", plasma.SocketPath, plasma.StateFile, plasma.LinksFile, plasma.LabsFile)
+	fmt.Fprintf(&b, "rm -rf %s\n", plasma.LabsRuntimeDir)
 	fmt.Fprintf(&b, "rm -f %s\n", plasma.DnsmasqPidFile)
 	// Per-VM copy-on-write disks only; the base image lives elsewhere.
 	fmt.Fprintf(&b, "rm -f %s/*.raw\n", plasma.RuntimeDir)

@@ -114,7 +114,7 @@ func TestRemove(t *testing.T) {
 		VmRecord{ID: "host-2", Group: "host", IP: "10.0.0.3"},
 	)
 
-	rec, ok, err := s.Remove("host-1")
+	rec, ok, err := s.Remove("", "host-1")
 	if err != nil || !ok {
 		t.Fatalf("remove: ok=%v err=%v", ok, err)
 	}
@@ -138,7 +138,7 @@ func TestRemove(t *testing.T) {
 func TestRemoveUnknownID(t *testing.T) {
 	s := newTestState(t, VmRecord{ID: "host-1", Group: "host", IP: "10.0.0.2"})
 
-	_, ok, err := s.Remove("host-9")
+	_, ok, err := s.Remove("", "host-9")
 	if err != nil || ok {
 		t.Fatalf("remove unknown: ok=%v err=%v, want ok=false err=nil", ok, err)
 	}

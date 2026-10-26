@@ -67,7 +67,7 @@ func TestValidateNics(t *testing.T) {
 }
 
 func TestPlanNics(t *testing.T) {
-	got, err := planNics("10.0.0.7", []NicSpec{
+	got, err := planNics(LabNet{}, "10.0.0.7", []NicSpec{
 		{Name: "eth1", Bridge: "pbr-ctl"},
 		{Name: "eth2", HostName: "fabcap"},
 	})
@@ -81,6 +81,44 @@ func TestPlanNics(t *testing.T) {
 	}
 	if !slices.Equal(got, want) {
 		t.Errorf("planNics = %+v, want %+v", got, want)
+	}
+}
+
+func TestPlanNicsInALab(t *testing.T) {
+	lab := LabNet{ID: "it-1", Index: 3}
+	got, err := planNics(lab, "10.0.3.7", []NicSpec{
+		{Name: "eth1", Bridge: "pbr-ctl"},
+		{Name: "eth2", HostName: "fabcap"},
+	})
+	if err != nil {
+		t.Fatalf("plan: %v", err)
+	}
+	want := []NicRecord{
+		{Name: "eth1", Tap: "pt3-7-eth1", MAC: "02:00:0b:03:01:07", Bridge: lab.HostBridge("pbr-ctl"), Segment: "pbr-ctl"},
+		// In a lab a host endpoint is not given the global name it asked for.
+		{Name: "eth2", Tap: "pt3-7-eth2", MAC: "02:00:0b:03:02:07", Segment: "host:fabcap"},
+	}
+	if !slices.Equal(got, want) {
+		t.Errorf("planNics = %+v, want %+v", got, want)
+	}
+	other := LabNet{ID: "it-2", Index: 4}
+	if lab.HostBridge("pbr-ctl") == other.HostBridge("pbr-ctl") {
+		t.Error("two labs share a bridge for the same segment name")
+	}
+	if b := lab.HostBridge("pbr-ctl"); len(b) > maxIfaceName || !isLinkBridge(b) {
+		t.Errorf("lab bridge %q is not a plasma bridge name that fits IFNAMSIZ", b)
+	}
+	if tap := (LabNet{ID: "x", Index: MaxLabs}).LinkTap(254, "eth99"); len(tap) > maxIfaceName {
+		t.Errorf("lab link tap %q exceeds IFNAMSIZ-1", tap)
+	}
+}
+
+func TestLegacyLabNetKeepsNames(t *testing.T) {
+	var legacy LabNet
+	if legacy.MgmtBridge() != Bridge || legacy.MgmtMAC(7) != "02:00:0a:00:00:07" ||
+		legacy.LinkMAC(7, 1) != NicMAC(7, 1) || legacy.MgmtTap("host-1", 7) != TapDeviceName("host-1") ||
+		legacy.HostBridge("pbr-x") != "pbr-x" || legacy.VMAddr(7) != "10.0.0.7" {
+		t.Error("index 0 must reproduce the pre-lab names")
 	}
 }
 
@@ -152,6 +190,25 @@ func TestLinkInfoCredential(t *testing.T) {
 	if string(body) != want {
 		t.Errorf("credential = %q, want %q", body, want)
 	}
+
+	// In a lab the guest is told the topology's names, not the host's.
+	body = credential(t, linkInfoCredential("node-1", []NicRecord{
+		{Name: "eth1", Bridge: "pbr-1a2b3c4d", Segment: "pbr-ctl", Address: "10.78.0.1/24"},
+		{Name: "eth2", Tap: "pt3-7-eth2", Segment: "host:a2it-cap"},
+	}))
+	want = "vm node-1\neth1 pbr-ctl 10.78.0.1/24\neth2 host:a2it-cap -\n"
+	if string(body) != want {
+		t.Errorf("credential = %q, want %q", body, want)
+	}
+}
+
+func credential(t *testing.T, arg string) []byte {
+	t.Helper()
+	body, err := base64.StdEncoding.DecodeString(strings.TrimPrefix(arg, "systemd.set_credential_binary=plasma.nics:"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return body
 }
 
 func TestAddressConflict(t *testing.T) {

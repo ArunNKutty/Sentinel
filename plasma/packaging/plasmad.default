@@ -1,0 +1,10 @@
+# Settings for plasmad under systemd (installed as /etc/default/plasmad).
+
+# Serve the network API so clients on other hosts can use this engine. TLS
+# and a token are generated on first start; print the client's login command
+# with:  sudo plasmad --print-login --listen :7443
+#PLASMAD_LISTEN=:7443
+
+# Container image clients should build kernel modules in. Derived from the
+# guest kernel's Debian release when unset.
+#PLASMAD_KBUILD_IMAGE=debian:forky

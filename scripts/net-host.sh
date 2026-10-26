@@ -1,12 +1,15 @@
 #!/usr/bin/env bash
 # Host-side network for the plasma fleet: the plasma-br0 bridge plus NAT so
-# VMs on 10.0.0.0/24 can reach the outside world. plasmad creates the bridge
+# VMs can reach the outside world — the legacy fleet on 10.0.0.0/24 and every
+# lab's management network (plasma-br<N>, 10.0.<N>.0/24) alike. plasmad creates the bridge
 # and the per-VM taps on its own; what it does not do is forwarding and
 # masquerading, which is what this script adds. Safe to re-run.
 set -euo pipefail
 
 BRIDGE="plasma-br0"
 SUBNET="10.0.0.0/24"
+# Every management network, legacy and labs.
+ALL_MGMT="10.0.0.0/16"
 GATEWAY="10.0.0.1/24"
 
 echo "Setting up host network for the plasma fleet..."
@@ -27,18 +30,20 @@ sudo sysctl -w net.ipv4.ip_forward=1 >/dev/null
 # 3. NAT out the default interface
 DEF_IF=$(ip route | awk '/^default/ {print $5; exit}')
 if [[ -n "$DEF_IF" ]]; then
-    sudo iptables -t nat -C POSTROUTING -s "$SUBNET" -o "$DEF_IF" -j MASQUERADE 2>/dev/null || \
-    sudo iptables -t nat -A POSTROUTING -s "$SUBNET" -o "$DEF_IF" -j MASQUERADE
+    sudo iptables -t nat -C POSTROUTING -s "$ALL_MGMT" -o "$DEF_IF" -j MASQUERADE 2>/dev/null || \
+    sudo iptables -t nat -A POSTROUTING -s "$ALL_MGMT" -o "$DEF_IF" -j MASQUERADE
 
-    sudo iptables -C FORWARD -i "$BRIDGE" -o "$DEF_IF" -j ACCEPT 2>/dev/null || \
-    sudo iptables -A FORWARD -i "$BRIDGE" -o "$DEF_IF" -j ACCEPT
+    # plasma-br+ matches plasma-br0 and every lab bridge, present or future.
+    sudo iptables -C FORWARD -i plasma-br+ -o "$DEF_IF" -j ACCEPT 2>/dev/null || \
+    sudo iptables -A FORWARD -i plasma-br+ -o "$DEF_IF" -j ACCEPT
 
-    sudo iptables -C FORWARD -i "$DEF_IF" -o "$BRIDGE" -m state --state RELATED,ESTABLISHED -j ACCEPT 2>/dev/null || \
-    sudo iptables -A FORWARD -i "$DEF_IF" -o "$BRIDGE" -m state --state RELATED,ESTABLISHED -j ACCEPT
+    sudo iptables -C FORWARD -i "$DEF_IF" -o plasma-br+ -m state --state RELATED,ESTABLISHED -j ACCEPT 2>/dev/null || \
+    sudo iptables -A FORWARD -i "$DEF_IF" -o plasma-br+ -m state --state RELATED,ESTABLISHED -j ACCEPT
 fi
 
-# 4. Let VMs on the bridge talk to each other
+# 4. Let VMs on one management bridge talk to each other. Labs are not
+#    forwarded to one another: each is its own network.
 sudo iptables -C FORWARD -i "$BRIDGE" -o "$BRIDGE" -j ACCEPT 2>/dev/null || \
 sudo iptables -A FORWARD -i "$BRIDGE" -o "$BRIDGE" -j ACCEPT
 
-echo "Host network ready: $BRIDGE (${GATEWAY%/*}), NAT for $SUBNET via ${DEF_IF:-<no default route>}."
+echo "Host network ready: $BRIDGE (${GATEWAY%/*}), NAT for $ALL_MGMT via ${DEF_IF:-<no default route>}."

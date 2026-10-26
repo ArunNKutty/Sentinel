@@ -1,4 +1,4 @@
-package main
+package plasma
 
 import (
 	"os"
@@ -6,7 +6,7 @@ import (
 	"testing"
 )
 
-// writeFakeBzImage builds just enough of a bzImage for kernelRelease: a
+// writeFakeBzImage builds just enough of a bzImage for KernelRelease: a
 // two-byte pointer at 0x20E holding the version string's offset relative to
 // 0x200.
 func writeFakeBzImage(t *testing.T, release string) string {
@@ -32,13 +32,13 @@ func TestKernelReleaseReadsHeaderPointer(t *testing.T) {
 	// scan for something version-shaped.
 	path := writeFakeBzImage(t, "6.18.10+deb14-cloud-amd64 (builder@host) #1 SMP")
 
-	if got := kernelRelease(path); got != "6.18.10+deb14-cloud-amd64" {
+	if got := KernelRelease(path); got != "6.18.10+deb14-cloud-amd64" {
 		t.Errorf("kernelRelease = %q, want the release with build details stripped", got)
 	}
 }
 
 func TestKernelReleaseMissingFile(t *testing.T) {
-	if got := kernelRelease(filepath.Join(t.TempDir(), "absent")); got != "" {
+	if got := KernelRelease(filepath.Join(t.TempDir(), "absent")); got != "" {
 		t.Errorf("kernelRelease on a missing file = %q, want \"\"", got)
 	}
 }
@@ -50,7 +50,7 @@ func TestKernelReleaseNoVersionPointer(t *testing.T) {
 	if err := os.WriteFile(path, make([]byte, 0x600), 0o644); err != nil {
 		t.Fatalf("write: %v", err)
 	}
-	if got := kernelRelease(path); got != "installed" {
+	if got := KernelRelease(path); got != "installed" {
 		t.Errorf("kernelRelease with a zero pointer = %q, want \"installed\"", got)
 	}
 }

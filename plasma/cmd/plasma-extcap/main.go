@@ -28,6 +28,8 @@ import (
 const (
 	vmPrefix     = "plasmavm-"
 	bridgePrefix = "plasmanet-"
+	// labPrefix values are plasmalab-<lab>/<target>.
+	labPrefix = "plasmalab-"
 )
 
 func main() {
@@ -55,6 +57,17 @@ func main() {
 	}
 }
 
+// client honours PLASMA_ENGINE and `plasma engine login`, so Wireshark on
+// a laptop lists a remote engine's VMs.
+func client() *plasma.Client {
+	c, err := plasma.ClientFromEnv()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "plasma-extcap:", err)
+		os.Exit(1)
+	}
+	return c
+}
+
 func printExtcapLine() {
 	fmt.Println("extcap {version=1.0}{display=Plasma}{help=https://github.com/fortaegis/plasma}")
 }
@@ -66,7 +79,7 @@ func printExtcapLine() {
 func listInterfaces() error {
 	printExtcapLine()
 
-	vms, err := plasma.NewClient(plasma.SocketPath).List()
+	vms, err := client().List()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "plasma-extcap: no interfaces:", err)
 		return nil
@@ -86,6 +99,25 @@ func listInterfaces() error {
 
 	fmt.Printf("interface {value=%s%s}{display=Plasma bridge %s (broadcast + host traffic only)}\n",
 		bridgePrefix, plasma.CaptureAllTarget, plasma.CaptureAllTarget)
+
+	labs, _ := client().Labs(context.Background())
+	for _, l := range labs {
+		for _, v := range l.VMs {
+			if v.Status != plasma.StatusRunning {
+				continue
+			}
+			fmt.Printf("interface {value=%s%s/%s}{display=Plasma lab %s: %s (%s)}\n",
+				labPrefix, l.ID, v.ID, l.ID, v.ID, v.IP)
+			for _, n := range v.Nics {
+				fmt.Printf("interface {value=%s%s/%s:%s}{display=Plasma lab %s: %s %s}\n",
+					labPrefix, l.ID, v.ID, n.Name, l.ID, v.ID, n.Name)
+			}
+		}
+		for _, b := range l.Bridges {
+			fmt.Printf("interface {value=%s%s/%s}{display=Plasma lab %s: segment %s}\n",
+				labPrefix, l.ID, b, l.ID, b)
+		}
+	}
 	return nil
 }
 
@@ -110,7 +142,7 @@ func runCapture(args argSet) error {
 		return fmt.Errorf("--capture needs --extcap-interface and --fifo")
 	}
 
-	target, err := decodeInterface(iface)
+	lab, target, err := decodeInterface(iface)
 	if err != nil {
 		return err
 	}
@@ -126,8 +158,13 @@ func runCapture(args argSet) error {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
-	stream, err := plasma.NewClient(plasma.SocketPath).Capture(ctx, target,
-		plasma.CaptureOptions{Filter: filter, Snaplen: snaplen})
+	opts := plasma.CaptureOptions{Filter: filter, Snaplen: snaplen}
+	var stream io.ReadCloser
+	if lab != "" {
+		stream, err = client().LabCapture(ctx, lab, target, opts)
+	} else {
+		stream, err = client().Capture(ctx, target, opts)
+	}
 	if err != nil {
 		return err
 	}
@@ -152,14 +189,18 @@ func runCapture(args argSet) error {
 
 // decodeInterface maps a Wireshark interface value back to a plasma capture
 // target.
-func decodeInterface(iface string) (string, error) {
+func decodeInterface(iface string) (lab, target string, err error) {
 	switch {
 	case strings.HasPrefix(iface, vmPrefix):
-		return strings.TrimPrefix(iface, vmPrefix), nil
+		return "", strings.TrimPrefix(iface, vmPrefix), nil
 	case strings.HasPrefix(iface, bridgePrefix):
-		return strings.TrimPrefix(iface, bridgePrefix), nil
+		return "", strings.TrimPrefix(iface, bridgePrefix), nil
+	case strings.HasPrefix(iface, labPrefix):
+		if lab, target, ok := strings.Cut(strings.TrimPrefix(iface, labPrefix), "/"); ok {
+			return lab, target, nil
+		}
 	}
-	return "", fmt.Errorf("unknown interface %q", iface)
+	return "", "", fmt.Errorf("unknown interface %q", iface)
 }
 
 // argSet is a parsed extcap command line. Wireshark mixes bare flags,

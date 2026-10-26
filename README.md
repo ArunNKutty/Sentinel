@@ -19,6 +19,11 @@ Network Encryptor (NE) product at fleet scale.
 | Delete one VM | `plasma vm delete host-1` |
 | Delete the fleet | `plasma down` |
 | Capture packets | `plasma vm capture host-1 --wireshark` |
+| **Use an engine on another host** | **`plasma engine login https://<engine>:7443 --token … --fingerprint …`** |
+| Bring up a lab (local or remote) | `plasma lab apply ./topologies/ne-lab.yaml --name it-1 --wait` |
+| Reach a lab VM's port | `plasma lab tunnel it-1 3000:fabric:3000` |
+| Impair / mirror a link | `plasma lab impair it-1 ne-00:eth2 --delay 50ms` · `plasma lab mirror it-1 a:eth1 --to cap:eth3` |
+| Delete a lab | `plasma lab delete it-1` |
 
 ---
 
@@ -294,6 +299,124 @@ plasma down                 # the whole fleet
 Both stop the `cloud-hypervisor` process, free the tap and DHCP reservation,
 and remove the disk, runtime files and state entry. `plasmad` keeps running
 after `plasma down`; stop it with `sudo pkill -x plasmad`.
+
+---
+
+## Remote engine: labs from anywhere
+
+A host running `plasmad` is an **engine**. A test suite (or a person) on any
+other machine can bring up a lab on it, reach the lab's services, capture its
+traffic and impair its links — without a login on the engine, without `sudo`,
+and without sharing files with it. The same commands work against the local
+engine; nothing about them assumes the client and engine are one host.
+
+A **lab** is one applied topology and everything it created. Names inside it
+(`fabric`, `node-1`, `wire`) are scoped to it, each lab gets its own management
+network (`plasma-br<N>`, `10.0.<N>.0/24`, its own dnsmasq), and
+`plasma lab delete` removes exactly what it made — so two runs never collide.
+
+### On the engine (once)
+
+```bash
+cd plasma && sudo make install install-service   # plasmad under systemd
+echo 'PLASMAD_LISTEN=:7443' | sudo tee -a /etc/default/plasmad
+sudo systemctl restart plasmad
+sudo ./scripts/net-host.sh        # NAT for every lab's management network
+sudo ./scripts/app-prep.sh        # guest bootstrap that reports "ready"
+sudo plasmad --print-login --listen :7443
+```
+
+`plasmad` generates a self-signed TLS certificate and a token on first start
+(`/var/lib/plasma/tls/`, `/var/lib/plasma/token`, root-only). `--print-login`
+prints the exact command for the client. Without `PLASMAD_LISTEN`, plasmad
+serves only its Unix socket, as before.
+
+> Re-run `app-prep.sh` after upgrading: a lab is **ready** once every guest
+> writes a ready line to its virtio console, which only the new bootstrap does.
+> VMs from an older base image boot fine but never report ready.
+
+### On the client
+
+```bash
+plasma engine login https://engine.lan:7443 --token <token> --fingerprint sha256:<…>
+plasma engine info        # guest kernel, kbuild image, capacity
+```
+
+The login is saved in `~/.config/plasma/engine.json` (mode 0600). For CI, set
+`PLASMA_ENGINE=https://…`, `PLASMA_TOKEN` and `PLASMA_FINGERPRINT` instead;
+`PLASMA_ENGINE=local` forces the local daemon, and `plasma engine logout`
+returns to it. The fingerprint is a pin: a client refuses any other
+certificate, so the token never goes to the wrong host.
+
+### Run a lab
+
+```bash
+plasma lab apply topologies/ne-lab.yaml --name it-1 --wait
+plasma lab status it-1
+plasma lab tunnel it-1 3000:fabric:3000 8080:fabric:8080 &   # http://localhost:3000
+plasma lab shell it-1 fabric                                  # serial console (Ctrl-X)
+plasma lab capture it-1 ne-00:eth2 --wireshark
+plasma lab mirror it-1 ne-00:eth2 --to capture:eth3           # replaces sudo tc mirred
+plasma lab impair it-1 ne-00:eth2 --delay 80ms --loss 0.5     # replaces fault-injector.sh
+plasma lab impair it-1 ne-00:eth2 --clear
+plasma lab drop it-1 ne-01:eth2 --once --wait --rule proto=udp,src=10.77.0.1,sport=4242,u8@34=5
+plasma lab delete it-1
+```
+
+- **`apply`** validates the topology on the client, uploads every file it
+  names (payloads, start scripts) to the engine's content-addressed store —
+  skipping any the engine already has, so a rerun sends only what changed —
+  and returns while the lab boots; `--wait` (or `plasma lab wait`) blocks
+  until every node is ready. A lab that cannot fit in the engine's memory is
+  refused up front.
+- **Topology files are unchanged.** `path:` is read on the client. An app can
+  instead name an uploaded artifact, `artifact: sha256:…` (from
+  `plasma artifact push`). A **bundle** — a `.tar` / `.tar.gz` payload, or
+  `type: bundle` — is unpacked into the app's directory, so its `cmd` can be a
+  script inside it: `{name: it, artifact: sha256:…, cmd: ./boot.sh}`.
+- **Tunnels keep `localhost`.** Each connection rides the API connection, so a
+  lab's services are never on an open port, and `http://localhost:3000` (and
+  the Keycloak redirect URIs that expect it) keeps working.
+- **Capture targets** in a lab: `<vm>`, `<vm>:<ethN>`, a `kind: bridge` node's
+  name (the whole segment), or `mgmt`. The Wireshark plugin lists the labs of
+  whichever engine the client is logged in to.
+- **Impairment** applies to frames delivered *to* that NIC; `--both-ends`
+  also applies it to the far end of a VM-to-VM link.
+- **Drop rules** (`plasma lab drop`) lose only the frames matching a u32
+  rule (protocol, addresses, ports, bytes at offsets), on their way to that
+  NIC. With `--once` the engine removes them on the first drop, so no second
+  frame slips through; the count is reported. `plasma lab mirror … --stats`
+  reports what a mirror copied each way.
+- **Building modules for the engine:** `plasma engine info` gives the guest
+  kernel release, its headers package and a matching build image; build your
+  `.ko` there (as `applications/scripts/build-ko.sh` does) instead of reading
+  `/opt/plasma` on the engine.
+
+The legacy, unscoped commands (`plasma vm launch`, `vm list`, `vm shell`,
+`vm capture`, `down`) keep working, locally or remotely. `plasma vm --topology`
+reads app paths from the engine's own disk, so it stays local-only; `plasma
+down` no longer touches VMs that belong to labs.
+
+### Engine API
+
+Everything above is this API; the CLI is one client of it. Over the network
+every call needs `Authorization: Bearer <token>`; the Unix socket is limited
+to the `plasma` group as before.
+
+| Call | |
+|------|---|
+| `GET /v1/engine` | version, arch, guest kernel, headers package, kbuild image, capacity, artifact cache |
+| `HEAD` / `PUT /v1/artifacts/{sha256}` | is it cached / upload it (the content must hash to the name) |
+| `POST /v1/labs` | `{name, topology: "<yaml>", files: {"<path as written>": "sha256:…"}}` → 202, lab status |
+| `GET /v1/labs`, `GET /v1/labs/{lab}` | phase, `ready`, per-VM status, IPs, link addresses, mirrors, filters |
+| `DELETE /v1/labs/{lab}` | stop a lab (even mid-create) and remove everything it made |
+| `GET /v1/labs/{lab}/topology` | the lab's wiring as a graph |
+| `GET /v1/labs/{lab}/capture?target=&filter=&snaplen=` | live pcap stream |
+| `GET /v1/labs/{lab}/vms/{vm}/tunnel/{port}` | `Upgrade: plasma-stream` → a TCP stream to that port on the VM |
+| `GET /v1/labs/{lab}/vms/{vm}/console` | `Upgrade: plasma-stream` → the serial console |
+| `PUT` / `GET` / `DELETE /v1/labs/{lab}/links/{vm:ethN}/mirror` | `{to: "vm:ethN"}`; `GET` = packets copied each way |
+| `PUT` / `GET` / `DELETE /v1/labs/{lab}/links/{vm:ethN}/drop` | `{rules: [{protocol, src, dst, sport, dport, bytes: [{offset, value, mask}]}], once, timeout}` → `{armed, done, dropped}` |
+| `PUT` / `DELETE /v1/labs/{lab}/links/{vm:ethN}/filters` | `{delay, jitter, loss, drop, both_ends}` |
 
 ---
 

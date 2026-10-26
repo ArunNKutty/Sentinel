@@ -47,6 +47,15 @@ DEVICE_ID="0x$(echo "$MAC" | tr -d ':')"
 export DEVICE_ID
 echo "ne-bootstrap: iface=$IFACE mac=$MAC device_id=$DEVICE_ID"
 
+# Tell plasmad this node's applications are started. The virtio console is a
+# file on the engine host, so one line there is how a lab reports ready to a
+# client that has no other way into the guest. Must match plasma.ReadyMarker.
+ready() {
+    if [ -c /dev/hvc0 ]; then
+        echo "PLASMA-READY $1" >/dev/hvc0 2>/dev/null || true
+    fi
+}
+
 # insmod, passing device_id only to modules that accept it.
 load_ko() {
     ko=$1
@@ -140,17 +149,21 @@ fi
 # cgroup when this script exits, and these apps are our children.
 if [ "$started" -gt 0 ]; then
     echo "ne-bootstrap: $started app(s) running"
+    ready "apps=$started"
     wait
 # run.sh is the generic hook: drop one in the artifacts disk to run something
 # other than the reference app.
 elif [ -x "$NE_DIR/run.sh" ]; then
     echo "ne-bootstrap: exec run.sh"
+    ready "run.sh"
     exec "$NE_DIR/run.sh"
 elif [ -x "$NE_DIR/neapp" ]; then
     echo "ne-bootstrap: exec neapp serve"
+    ready "neapp"
     exec "$NE_DIR/neapp" serve
 else
     echo "ne-bootstrap: no run.sh, neapp or apps to start; modules loaded only"
+    ready "modules"
 fi
 BOOTSTRAP
 chmod 0755 "$MNT/usr/local/sbin/ne-bootstrap"

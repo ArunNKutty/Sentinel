@@ -77,13 +77,36 @@ func (s *State) Add(rec VmRecord) error {
 	return s.saveLocked()
 }
 
-// Remove deletes the record with the given ID and returns it. ok is false
-// (and state is left untouched) if no record matched.
-func (s *State) Remove(id string) (rec VmRecord, ok bool, err error) {
+// Get returns the VM with this ID in lab ("" for the legacy fleet).
+func (s *State) Get(lab, id string) (VmRecord, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, v := range s.vms {
+		if v.Lab == lab && v.ID == id {
+			return v, true
+		}
+	}
+	return VmRecord{}, false
+}
+
+// InLab returns the VMs of one lab ("" for the legacy fleet).
+func (s *State) InLab(lab string) []VmRecord {
+	var out []VmRecord
+	for _, v := range s.List() {
+		if v.Lab == lab {
+			out = append(out, v)
+		}
+	}
+	return out
+}
+
+// Remove deletes the record with the given ID in lab and returns it. ok is
+// false (and state is left untouched) if no record matched.
+func (s *State) Remove(lab, id string) (rec VmRecord, ok bool, err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for i, v := range s.vms {
-		if v.ID != id {
+		if v.Lab != lab || v.ID != id {
 			continue
 		}
 		rec = v
@@ -104,32 +127,32 @@ func (s *State) Allocate(group string) (id, ip, mac string, err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	octet, err := s.freeOctetLocked()
+	octet, err := s.freeOctetLocked("")
 	if err != nil {
 		return "", "", "", err
 	}
-	return s.nextIDLocked(group), fmt.Sprintf("10.0.0.%d", octet),
-		fmt.Sprintf("02:00:0a:00:00:%02x", octet), nil
+	var legacy LabNet
+	return s.nextIDLocked(group), legacy.VMAddr(octet), legacy.MgmtMAC(octet), nil
 }
 
-// AllocateNamed reserves an explicitly named VM plus the lowest free address.
-// Topology files name their nodes, so those launches bypass the <group>-N
-// allocator but must still take an address and reject duplicates.
-func (s *State) AllocateNamed(id string) (ip, mac string, err error) {
+// AllocateNamed reserves an explicitly named VM in a lab plus the lowest free
+// address on its management network. Topology files name their nodes, so
+// those launches bypass the <group>-N allocator but must still take an
+// address and reject duplicates.
+func (s *State) AllocateNamed(net LabNet, id string) (ip, mac string, err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	for _, v := range s.vms {
-		if v.ID == id {
+		if v.Lab == net.ID && v.ID == id {
 			return "", "", fmt.Errorf("VM %q already exists", id)
 		}
 	}
-	octet, err := s.freeOctetLocked()
+	octet, err := s.freeOctetLocked(net.ID)
 	if err != nil {
 		return "", "", err
 	}
-	return fmt.Sprintf("10.0.0.%d", octet),
-		fmt.Sprintf("02:00:0a:00:00:%02x", octet), nil
+	return net.VMAddr(octet), net.MgmtMAC(octet), nil
 }
 
 // nextIDLocked follows the CLAUDE.md convention: ne-NN (zero-indexed, padded
@@ -138,7 +161,7 @@ func (s *State) nextIDLocked(group string) string {
 	prefix := group + "-"
 	highest := -1
 	for _, v := range s.vms {
-		if v.Group != group || !strings.HasPrefix(v.ID, prefix) {
+		if v.Lab != "" || v.Group != group || !strings.HasPrefix(v.ID, prefix) {
 			continue
 		}
 		n, err := strconv.Atoi(strings.TrimPrefix(v.ID, prefix))
@@ -174,11 +197,14 @@ func FleetMemberID(group string, ordinal int) string {
 	return fmt.Sprintf("%s-%d", group, ordinal+1)
 }
 
-// freeOctetLocked returns the lowest final octet in 10.0.0.0/24 not already
-// held by a record. .1 is the host side of the bridge.
-func (s *State) freeOctetLocked() (int, error) {
+// freeOctetLocked returns the lowest final octet on a lab's management /24
+// not already held by one of its VMs. .1 is the host side of the bridge.
+func (s *State) freeOctetLocked(lab string) (int, error) {
 	used := make(map[int]bool, len(s.vms))
 	for _, v := range s.vms {
+		if v.Lab != lab {
+			continue
+		}
 		i := strings.LastIndex(v.IP, ".")
 		if i < 0 {
 			continue
@@ -192,7 +218,7 @@ func (s *State) freeOctetLocked() (int, error) {
 			return n, nil
 		}
 	}
-	return 0, fmt.Errorf("no free address in 10.0.0.0/24")
+	return 0, fmt.Errorf("no free management address left (253 VMs per lab)")
 }
 
 // Reconcile marks records whose process is no longer alive as exited. State

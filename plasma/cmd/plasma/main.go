@@ -1,10 +1,10 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"io"
-	"net"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -52,7 +52,7 @@ func main() {
 	// capture is VM-scoped, so it belongs beside list/shell/delete rather than
 	// at the top level.
 	vm.AddCommand(launchCmd(), listCmd(), shellCmd(), deleteCmd(), captureCmd())
-	root.AddCommand(initCmd(), exitCmd(), vm, downCmd())
+	root.AddCommand(initCmd(), exitCmd(), vm, downCmd(), labCmd(), engineCmd(), artifactCmd())
 
 	if err := root.Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
@@ -63,6 +63,12 @@ func main() {
 // runTopology brings up every node a topology file declares. Nodes are
 // launched in the file's sorted order so addresses are assigned predictably.
 func runTopology(path string) error {
+	c := newClient()
+	if c.Remote() {
+		// App paths in a legacy topology are read by the daemon from its own
+		// disk; a lab uploads them instead.
+		return fmt.Errorf("plasma vm --topology needs a local engine; with %s use: plasma lab apply %s", c.Where(), path)
+	}
 	topo, err := plasma.LoadTopoFile(path)
 	if err != nil {
 		return err
@@ -80,8 +86,6 @@ func runTopology(path string) error {
 		fmt.Printf(", %d link(s)", len(topo.Links))
 	}
 	fmt.Println()
-
-	c := plasma.NewClient(plasma.SocketPath)
 
 	var failed []string
 	for _, n := range topo.Nodes {
@@ -129,7 +133,7 @@ func launchCmd() *cobra.Command {
 		Short: "Launch a new VM in the given group",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(_ *cobra.Command, args []string) error {
-			c := plasma.NewClient(plasma.SocketPath)
+			c := newClient()
 			rec, err := c.Launch(args[0])
 			if err != nil {
 				return err
@@ -146,16 +150,16 @@ func listCmd() *cobra.Command {
 		Short: "List VMs",
 		Args:  cobra.NoArgs,
 		RunE: func(_ *cobra.Command, _ []string) error {
-			c := plasma.NewClient(plasma.SocketPath)
+			c := newClient()
 			vms, err := c.List()
 			if err != nil {
 				return err
 			}
 			tw := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-			fmt.Fprintln(tw, "ID\tGROUP\tSTATUS\tIP\tLINKS\tPID\tUPTIME")
+			fmt.Fprintln(tw, "LAB\tID\tGROUP\tSTATUS\tIP\tLINKS\tPID\tUPTIME")
 			for _, v := range vms {
-				fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%d\t%s\n",
-					v.ID, v.Group, v.Status, v.IP, linkAddresses(v.Nics), v.PID, uptime(v.StartedAt))
+				fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%d\t%s\n",
+					cmp.Or(v.Lab, "-"), v.ID, v.Group, v.Status, v.IP, linkAddresses(v.Nics), v.PID, uptime(v.StartedAt))
 			}
 			return tw.Flush()
 		},
@@ -184,7 +188,7 @@ func deleteCmd() *cobra.Command {
 		Short:   "Delete a VM",
 		Args:    cobra.ExactArgs(1),
 		RunE: func(_ *cobra.Command, args []string) error {
-			c := plasma.NewClient(plasma.SocketPath)
+			c := newClient()
 			if err := c.Delete(args[0]); err != nil {
 				return err
 			}
@@ -200,17 +204,31 @@ func downCmd() *cobra.Command {
 		Short: "Tear down every VM in the fleet",
 		Args:  cobra.NoArgs,
 		RunE: func(_ *cobra.Command, _ []string) error {
-			c := plasma.NewClient(plasma.SocketPath)
+			c := newClient()
 			vms, err := c.List()
 			if err != nil {
 				return err
 			}
-			if len(vms) == 0 {
+			// Labs own their VMs: they go with `plasma lab delete`, so a
+			// `down` here cannot take out someone else's run.
+			inLabs := 0
+			var legacy []plasma.VmRecord
+			for _, v := range vms {
+				if v.Lab != "" {
+					inLabs++
+					continue
+				}
+				legacy = append(legacy, v)
+			}
+			if inLabs > 0 {
+				defer fmt.Printf("left %d VM(s) that belong to labs (plasma lab list)\n", inLabs)
+			}
+			if len(legacy) == 0 {
 				fmt.Println("no VMs running")
 				return nil
 			}
 			var failed []string
-			for _, v := range vms {
+			for _, v := range legacy {
 				if err := c.Delete(v.ID); err != nil {
 					failed = append(failed, fmt.Sprintf("%s: %v", v.ID, err))
 					continue
@@ -259,6 +277,14 @@ func captureCmd() *cobra.Command {
 }
 
 func runCapture(id, filter, outPath string, snaplen int, toWireshark bool) error {
+	return streamCapture(id, outPath, toWireshark, func(ctx context.Context) (io.ReadCloser, error) {
+		return newClient().Capture(ctx, id, plasma.CaptureOptions{Filter: filter, Snaplen: snaplen})
+	})
+}
+
+// streamCapture sends a capture wherever the flags say: Wireshark, a file, a
+// decoded view on a terminal, or raw pcap down a pipe.
+func streamCapture(id, outPath string, toWireshark bool, open func(context.Context) (io.ReadCloser, error)) error {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
@@ -267,8 +293,7 @@ func runCapture(id, filter, outPath string, snaplen int, toWireshark bool) error
 	// this command looks like, so it should behave like it.
 	toTerminal := outPath == "" && !toWireshark && term.IsTerminal(int(os.Stdout.Fd()))
 
-	c := plasma.NewClient(plasma.SocketPath)
-	stream, err := c.Capture(ctx, id, plasma.CaptureOptions{Filter: filter, Snaplen: snaplen})
+	stream, err := open(ctx)
 	if err != nil {
 		return err
 	}
@@ -361,100 +386,81 @@ func shellCmd() *cobra.Command {
 		Short: "Attach an interactive shell to a VM's serial console",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(_ *cobra.Command, args []string) error {
-			return runShell(args[0])
+			return runShell("", args[0])
 		},
 	}
 }
 
-// openConsole attaches to a VM's serial line. New VMs expose it as a pty,
-// which can be reopened as often as you like; VMs launched before that change
-// still carry a unix socket, which cloud-hypervisor only ever serves to one
-// client. Both are supported so an existing fleet keeps working.
-func openConsole(id string) (io.ReadWriteCloser, func(), error) {
-	vms, err := plasma.NewClient(plasma.SocketPath).List()
-	if err != nil {
-		return nil, nil, err
-	}
-	var rec plasma.VmRecord
-	for _, v := range vms {
-		if v.ID == id {
-			rec = v
-			break
-		}
-	}
-	if rec.ID == "" {
-		return nil, nil, fmt.Errorf("no such VM: %s", id)
-	}
-	if rec.Status != plasma.StatusRunning {
-		return nil, nil, fmt.Errorf("%s is %s", id, rec.Status)
-	}
-
-	if rec.ConsolePTY != "" {
-		f, err := os.OpenFile(rec.ConsolePTY, os.O_RDWR, 0)
-		if err != nil {
-			return nil, nil, fmt.Errorf("open console %s: %w", rec.ConsolePTY, err)
-		}
-		// The pty's line discipline would echo our keystrokes on top of the
-		// guest's own echo, so put the pty in raw mode too — not just stdin.
-		prev, err := term.MakeRaw(int(f.Fd()))
-		if err != nil {
-			f.Close()
-			return nil, nil, fmt.Errorf("raw mode on %s: %w", rec.ConsolePTY, err)
-		}
-		return f, func() { term.Restore(int(f.Fd()), prev); f.Close() }, nil
-	}
-
-	sock := rec.ConsoleSocket
-	if sock == "" {
-		sock = plasma.ConsoleSocketPath(id)
-	}
-	conn, err := net.Dial("unix", sock)
-	if err != nil {
-		return nil, nil, fmt.Errorf("connect to console for %s: %w (is it running?)", id, err)
-	}
-	return conn, func() { conn.Close() }, nil
-}
-
-func runShell(id string) error {
-	conn, closeConsole, err := openConsole(id)
-	if err != nil {
-		return err
-	}
-	defer closeConsole()
-
+// runShell attaches the terminal to a VM's serial console through the
+// engine's API, which works the same for a local engine and a remote one.
+func runShell(lab, id string) error {
 	fd := int(os.Stdin.Fd())
 	if !term.IsTerminal(fd) {
 		return fmt.Errorf("stdin is not a terminal")
 	}
+	conn, err := newClient().Console(context.Background(), lab, id)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+
 	oldState, err := term.MakeRaw(fd)
 	if err != nil {
 		return fmt.Errorf("set raw mode: %w", err)
 	}
 	defer term.Restore(fd, oldState)
 
-	fmt.Fprintf(os.Stderr, "Connected to %s. Press Ctrl-X to detach.\r\n\r\n", id)
+	name := id
+	if lab != "" {
+		name = lab + "/" + id
+	}
+	fmt.Fprintf(os.Stderr, "Connected to %s. Press Ctrl-X to detach.\r\n\r\n", name)
 
-	go io.Copy(os.Stdout, conn)
+	remoteDone := make(chan struct{})
+	go func() {
+		io.Copy(os.Stdout, conn)
+		close(remoteDone)
+	}()
 	// getty prints its login prompt once, to whoever's attached at the time;
 	// if that was nobody, a blank line makes it reprint immediately instead
 	// of leaving the session looking dead until the ~60s login timeout.
 	conn.Write([]byte("\r\n"))
 
-	buf := make([]byte, 1)
-	for {
-		n, err := os.Stdin.Read(buf)
-		if err != nil || (n > 0 && buf[0] == detachByte) {
-			break
-		}
-		if n > 0 {
-			if _, err := conn.Write(buf[:n]); err != nil {
-				break
+	localDone := make(chan struct{})
+	go func() {
+		defer close(localDone)
+		buf := make([]byte, 1)
+		for {
+			n, err := os.Stdin.Read(buf)
+			if err != nil || (n > 0 && buf[0] == detachByte) {
+				return
+			}
+			if n > 0 {
+				if _, err := conn.Write(buf[:n]); err != nil {
+					return
+				}
 			}
 		}
-	}
+	}()
 
-	fmt.Fprintf(os.Stderr, "\r\nDisconnected from %s.\r\n", id)
+	select {
+	case <-localDone:
+		fmt.Fprintf(os.Stderr, "\r\nDisconnected from %s.\r\n", name)
+	case <-remoteDone:
+		fmt.Fprintf(os.Stderr, "\r\nConsole of %s closed by the engine.\r\n", name)
+	}
 	return nil
+}
+
+// newClient is the engine every command talks to: PLASMA_ENGINE, else the
+// one saved by `plasma engine login`, else the local daemon.
+func newClient() *plasma.Client {
+	c, err := plasma.ClientFromEnv()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(1)
+	}
+	return c
 }
 
 func uptime(start time.Time) string {

@@ -64,9 +64,10 @@ type Link struct {
 
 const defaultPlane = "data"
 
-// BuildTopology derives the graph from current state plus whatever links the
-// last applied topology file declared. Declared links are passed in rather
-// than read from disk here so this stays a pure function of its inputs.
+// BuildTopology derives the legacy fleet's graph from current state plus
+// whatever links the last applied topology file declared. Declared links are
+// passed in rather than read from disk here so this stays a pure function of
+// its inputs.
 func BuildTopology(state *State, now func() int64, declared LinksDocument) Topology {
 	plane := Plane{
 		Name:          defaultPlane,
@@ -78,8 +79,13 @@ func BuildTopology(state *State, now func() int64, declared LinksDocument) Topol
 			"VM-to-VM frames are forwarded port-to-port and do not appear here. " +
 			"Capture a VM's tap to see its traffic.",
 	}
+	return buildTopology(state.InLab(""), plane, false, now, declared)
+}
 
-	vms := state.List()
+// buildTopology is the graph for one set of VMs on one management plane. In a
+// lab, planes and links carry the topology's own segment names, and capture
+// targets are the lab's (a bridge node's name, <vm>:<ethN>).
+func buildTopology(vms []VmRecord, plane Plane, lab bool, now func() int64, declared LinksDocument) Topology {
 	// wired is keyed "vm:ethN" for every link NIC of a running VM.
 	wired := make(map[string]bool)
 	seenPlane := make(map[string]bool)
@@ -115,13 +121,13 @@ func BuildTopology(state *State, now func() int64, declared LinksDocument) Topol
 			PID:        v.PID,
 			Capturable: running,
 			UptimeSecs: uptime,
-			Plane:      defaultPlane,
+			Plane:      plane.Name,
 		})
 		topo.Links = append(topo.Links, Link{
 			From:  v.ID,
-			To:    Bridge,
+			To:    plane.Bridge,
 			Via:   tap,
-			Plane: defaultPlane,
+			Plane: plane.Name,
 			Wired: true,
 		})
 
@@ -134,9 +140,20 @@ func BuildTopology(state *State, now func() int64, declared LinksDocument) Topol
 			if to == "" {
 				to = n.Tap
 			}
+			if n.Segment != "" {
+				to = n.Segment
+			}
 			if !seenPlane[to] {
 				seenPlane[to] = true
-				topo.Planes = append(topo.Planes, linkPlane(v.ID, n))
+				p := linkPlane(v.ID, n)
+				if lab {
+					p.Name = to
+					p.CaptureTarget = v.ID + ":" + n.Name
+					if strings.HasPrefix(n.Segment, NodeBridgePrefix) {
+						p.CaptureTarget = strings.TrimPrefix(n.Segment, NodeBridgePrefix)
+					}
+				}
+				topo.Planes = append(topo.Planes, p)
 			}
 			topo.Links = append(topo.Links, Link{
 				From:  v.ID,
@@ -160,7 +177,7 @@ func BuildTopology(state *State, now func() int64, declared LinksDocument) Topol
 		topo.Links = append(topo.Links, Link{
 			From:  d.ANode,
 			To:    d.BNode,
-			Plane: defaultPlane,
+			Plane: plane.Name,
 			Wired: false,
 			Label: strings.TrimSpace(d.AInterface + " ↔ " + d.BInterface),
 		})

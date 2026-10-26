@@ -121,6 +121,9 @@ fi
 
 install -m 0644 "$VMLINUZ" "$PLASMA/debian/vmlinuz"
 install -m 0644 "$INITRD"  "$PLASMA/debian/initrd.img"
+# plasmad advertises this to remote clients (GET /v1/engine), which build
+# their modules against it.
+echo "$KVER" > "$PLASMA/debian/vmlinuz.release"
 sync
 
 echo

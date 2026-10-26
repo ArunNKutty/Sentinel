@@ -1,9 +1,13 @@
 package plasma
 
 import (
+	"bytes"
+	"errors"
 	"fmt"
+	"io"
 	"net/netip"
 	"os"
+	"path"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -142,41 +146,64 @@ type ResolvedTopology struct {
 	// daemon creates each bridge when the first VM linked to it boots.
 	Bridges []string
 	Links   []DeclaredLink
+	// Files maps each file the topology names (FileKey of the written path)
+	// to where it was found locally. A client uploads these for a lab.
+	Files map[string]string
 }
 
 // idPattern keeps node names usable as interface and file names.
 var idPattern = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_-]*$`)
 
-func LoadTopoFile(path string) (*ResolvedTopology, error) {
+func LoadTopoFile(file string) (*ResolvedTopology, error) { return loadTopoFile(file, false) }
+
+// LoadLabTopoFile checks a lab topology on the client and collects the files
+// it names, for upload. Artifacts it references are left to the engine.
+func LoadLabTopoFile(file string) (*ResolvedTopology, error) { return loadTopoFile(file, true) }
+
+func loadTopoFile(file string, lab bool) (*ResolvedTopology, error) {
 	// App paths resolve against the file's directory and are then opened by
 	// plasmad, whose working directory is not the caller's: they must leave
 	// here absolute even when the file was named relatively.
-	path, err := filepath.Abs(path)
+	file, err := filepath.Abs(file)
 	if err != nil {
 		return nil, err
 	}
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(file)
 	if err != nil {
 		return nil, err
 	}
-	var f TopoFile
-	// KnownFields catches typos like `noeds:` that would otherwise silently
-	// produce an empty topology.
-	dec := yaml.NewDecoder(strings.NewReader(string(data)))
-	dec.KnownFields(true)
-	if err := dec.Decode(&f); err != nil {
-		return nil, fmt.Errorf("parse %s: %w", path, err)
+	f, err := ParseTopoFile(data)
+	if err != nil {
+		return nil, fmt.Errorf("parse %s: %w", file, err)
 	}
 	// App paths are written relative to the topology file, the way every
 	// other tool that references artifacts from a manifest reads them.
-	return f.resolve(filepath.Dir(path))
+	res := &localFiles{baseDir: filepath.Dir(file), found: map[string]string{}, allowArtifacts: lab}
+	topo, err := f.resolve(res)
+	if err != nil {
+		return nil, err
+	}
+	topo.Files = res.found
+	return topo, nil
+}
+
+// ParseTopoFile decodes a topology strictly: KnownFields catches typos like
+// `noeds:` that would otherwise silently produce an empty topology.
+func ParseTopoFile(data []byte) (*TopoFile, error) {
+	var f TopoFile
+	dec := yaml.NewDecoder(bytes.NewReader(data))
+	dec.KnownFields(true)
+	if err := dec.Decode(&f); err != nil {
+		return nil, err
+	}
+	return &f, nil
 }
 
 // Resolve resolves a topology whose app paths are already absolute (or
 // relative to the process's working directory).
-func (f *TopoFile) Resolve() (*ResolvedTopology, error) { return f.resolve("") }
+func (f *TopoFile) Resolve() (*ResolvedTopology, error) { return f.resolve(&localFiles{}) }
 
-func (f *TopoFile) resolve(baseDir string) (*ResolvedTopology, error) {
+func (f *TopoFile) resolve(res fileResolver) (*ResolvedTopology, error) {
 	if len(f.Topology.Nodes) == 0 {
 		return nil, fmt.Errorf("topology has no nodes")
 	}
@@ -221,7 +248,7 @@ func (f *TopoFile) resolve(baseDir string) (*ResolvedTopology, error) {
 			spec.Group = name
 		}
 
-		apps, err := resolveApps(name, spec.Apps, baseDir)
+		apps, err := resolveApps(name, spec.Apps, res)
 		if err != nil {
 			return nil, err
 		}
@@ -357,10 +384,71 @@ func merge(a, b NodeSpec) NodeSpec {
 	return a
 }
 
-// resolveApps validates a node's app list and turns every path into an
-// absolute one, so the daemon — which has no idea where the topology file
-// lives — can read the payloads.
-func resolveApps(node string, apps []AppSpec, baseDir string) ([]AppSpec, error) {
+// fileResolver finds the files a topology names. On the client (and for the
+// legacy `plasma vm --topology`) that is the local disk, relative to the
+// topology file; on the engine it is the artifact store, through the map of
+// written paths to hashes the client sent with the topology. Both run the
+// same validation, so a topology that resolves on the client resolves on the
+// engine too.
+type fileResolver interface {
+	// file resolves a path as written in the topology to a readable regular
+	// file. A missing file is reported wrapping errNoFile.
+	file(written string) (string, error)
+	// artifact resolves an `artifact: sha256:...` reference.
+	artifact(ref string) (string, error)
+}
+
+var errNoFile = errors.New("no such file")
+
+// FileKey is how a topology's written path is matched against a lab's files
+// map: slash-separated and cleaned, so ./a/../b and b are one file.
+func FileKey(written string) string {
+	return path.Clean(filepath.ToSlash(strings.TrimSpace(written)))
+}
+
+// localFiles resolves against the disk, recording what it found so a client
+// knows which files to upload. With allowArtifacts (a client checking a lab
+// topology) an `artifact:` reference is accepted unseen; the engine, which
+// holds it, checks it properly.
+type localFiles struct {
+	baseDir        string
+	found          map[string]string // FileKey -> absolute path
+	allowArtifacts bool
+}
+
+func (l *localFiles) file(written string) (string, error) {
+	p := written
+	if !filepath.IsAbs(p) {
+		p = filepath.Join(l.baseDir, p)
+	}
+	p = filepath.Clean(p)
+	st, err := os.Stat(p)
+	if os.IsNotExist(err) {
+		return "", fmt.Errorf("%s: %w", p, errNoFile)
+	}
+	if err != nil {
+		return "", err
+	}
+	if st.IsDir() {
+		return "", fmt.Errorf("path %s is a directory, want a file", p)
+	}
+	if l.found != nil {
+		l.found[FileKey(written)] = p
+	}
+	return p, nil
+}
+
+func (l *localFiles) artifact(ref string) (string, error) {
+	if !l.allowArtifacts {
+		return "", fmt.Errorf("artifact %s: artifacts are only for lab topologies (plasma lab apply)", ref)
+	}
+	_, err := ParseArtifactRef(ref)
+	return "", err
+}
+
+// resolveApps validates a node's app list and turns every file into one the
+// daemon can read: an absolute host path, or an artifact store entry.
+func resolveApps(node string, apps []AppSpec, res fileResolver) ([]AppSpec, error) {
 	if len(apps) == 0 {
 		return nil, nil
 	}
@@ -377,8 +465,11 @@ func resolveApps(node string, apps []AppSpec, baseDir string) ([]AppSpec, error)
 			return nil, fmt.Errorf("node %q: app %q is declared twice", node, a.Name)
 		}
 		seen[a.Name] = true
-		if a.Path == "" {
-			return nil, fmt.Errorf("node %q: app %q is missing 'path'", node, a.Name)
+		switch {
+		case a.Path == "" && a.Artifact == "":
+			return nil, fmt.Errorf("node %q: app %q is missing 'path' (or 'artifact')", node, a.Name)
+		case a.Path != "" && a.Artifact != "":
+			return nil, fmt.Errorf("node %q: app %q: set 'path' or 'artifact', not both", node, a.Name)
 		}
 		// Tabs and newlines would break the apps.list the guest parses, and a
 		// command spanning lines is a mistake anyway.
@@ -388,105 +479,143 @@ func resolveApps(node string, apps []AppSpec, baseDir string) ([]AppSpec, error)
 
 		// Fail here rather than at launch: a typo'd path should not take down
 		// half a fleet after the first VMs are already up.
-		path, err := appFile(baseDir, a.Path)
+		var file, name string
+		var err error
+		if a.Artifact != "" {
+			file, err = res.artifact(a.Artifact)
+		} else {
+			file, err = res.file(a.Path)
+			name = path.Base(FileKey(a.Path))
+		}
 		if err != nil {
 			return nil, fmt.Errorf("node %q: app %q: %w", node, a.Name, err)
 		}
 
-		typ, err := appType(node, a, path)
+		typ, err := appType(node, a, name, file)
 		if err != nil {
 			return nil, err
 		}
+		if name == "" {
+			// An artifact has no name of its own; a module's must end in .ko
+			// for insmod and for the bootstrap to recognise it.
+			name = a.Name
+			if typ == AppTypeKernel {
+				name += ".ko"
+			}
+		}
 
-		script, cmd, err := appCommand(baseDir, a.Cmd)
+		// An artifact a client has not seen (file == "") may be a bundle
+		// carrying its own scripts, so its cmd is not held to the topology's
+		// files here; the engine decides with the artifact in hand.
+		unseen := a.Artifact != "" && file == ""
+		script, scriptName, cmd, err := appCommand(res, a.Cmd, typ == AppTypeBundle || unseen)
 		if err != nil {
 			return nil, fmt.Errorf("node %q: app %q: cmd: %w", node, a.Name, err)
 		}
-		if script != "" && filepath.Base(script) == filepath.Base(path) {
+		if script != "" && scriptName == name && typ != AppTypeBundle {
 			return nil, fmt.Errorf("node %q: app %q: start script and payload are both named %q; they share one directory in the guest",
-				node, a.Name, filepath.Base(path))
+				node, a.Name, name)
 		}
-		if typ == AppTypeUserspace && cmd == "" && script == "" {
+		switch {
+		case typ == AppTypeBundle && cmd == "":
+			return nil, fmt.Errorf("node %q: app %q: a bundle needs a cmd to start it (e.g. cmd: ./boot.sh)", node, a.Name)
+		case typ == AppTypeUserspace && cmd == "":
 			// The payload itself is what runs, so it has to be runnable.
 			// A Python script needs `cmd: python3 $APP` (or a shebang).
 			cmd = "$APP"
 		}
 
-		out = append(out, AppSpec{Name: a.Name, Type: typ, Path: path, Cmd: cmd, Script: script})
+		out = append(out, AppSpec{Name: a.Name, Type: typ, Path: file, Cmd: cmd,
+			Script: script, FileName: name, ScriptName: scriptName})
 	}
 	return out, nil
 }
 
-// appFile resolves one host-side path from a topology file and checks it is
-// a readable regular file.
-func appFile(baseDir, p string) (string, error) {
-	if !filepath.IsAbs(p) {
-		p = filepath.Join(baseDir, p)
-	}
-	p = filepath.Clean(p)
-	st, err := os.Stat(p)
-	if err != nil {
-		return "", err
-	}
-	if st.IsDir() {
-		return "", fmt.Errorf("path %s is a directory, want a file", p)
-	}
-	return p, nil
-}
-
-// appType settles kernel vs userspace. An explicit type is authoritative but
-// still has to agree with the payload: a `.ko` cannot be run and a program
-// cannot be insmod'ed, so a mismatch is a mistake worth catching before boot.
-func appType(node string, a AppSpec, path string) (string, error) {
-	isKO := strings.HasSuffix(path, ".ko")
+// appType settles the app's type. An explicit type is authoritative but
+// still has to agree with the payload: a `.ko` cannot be run, a program
+// cannot be insmod'ed and a bundle must be an archive, so a mismatch is a
+// mistake worth catching before boot. name is the payload's written name, or
+// "" for an artifact, whose type is then read from its content.
+func appType(node string, a AppSpec, name, file string) (string, error) {
+	isKO := strings.HasSuffix(name, ".ko")
 	switch a.Type {
 	case "":
-		if isKO {
+		switch {
+		case isKO:
 			return AppTypeKernel, nil
+		case isBundleName(name), name == "" && isArchive(file):
+			return AppTypeBundle, nil
 		}
 		return AppTypeUserspace, nil
 	case AppTypeKernel:
-		if !isKO {
+		if name != "" && !isKO {
 			return "", fmt.Errorf("node %q: app %q: type %q needs a .ko, got %s",
-				node, a.Name, AppTypeKernel, filepath.Base(path))
+				node, a.Name, AppTypeKernel, name)
 		}
 		return AppTypeKernel, nil
 	case AppTypeUserspace:
 		if isKO {
 			return "", fmt.Errorf("node %q: app %q: %s is a kernel module, so type must be %q",
-				node, a.Name, filepath.Base(path), AppTypeKernel)
+				node, a.Name, name, AppTypeKernel)
 		}
 		return AppTypeUserspace, nil
+	case AppTypeBundle:
+		if file != "" && !isArchive(file) {
+			return "", fmt.Errorf("node %q: app %q: type %q needs a .tar or .tar.gz", node, a.Name, AppTypeBundle)
+		}
+		return AppTypeBundle, nil
 	default:
-		return "", fmt.Errorf("node %q: app %q: unknown type %q (want %q or %q)",
-			node, a.Name, a.Type, AppTypeKernel, AppTypeUserspace)
+		return "", fmt.Errorf("node %q: app %q: unknown type %q (want %q, %q or %q)",
+			node, a.Name, a.Type, AppTypeKernel, AppTypeUserspace, AppTypeBundle)
 	}
 }
 
+// isArchive sniffs a gzip or tar header.
+func isArchive(file string) bool {
+	f, err := os.Open(file)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	head := make([]byte, 262)
+	n, _ := io.ReadFull(f, head)
+	head = head[:n]
+	if n >= 2 && head[0] == 0x1f && head[1] == 0x8b {
+		return true
+	}
+	return n >= 262 && string(head[257:262]) == "ustar"
+}
+
 // appCommand decides which of the two cmd forms was written. A cmd naming a
-// file on the host is a start script: it is deployed beside the payload and
-// invoked from there, because nothing in the guest can reach a host path.
-// Anything else — `make -C /opt/apps/foo run`, `python3 $APP --serve` — is a
-// command line for the guest's shell.
+// file is a start script: it is deployed beside the payload and invoked from
+// there, because nothing in the guest can reach a host path. Anything else —
+// `make -C /opt/apps/foo run`, `python3 $APP --serve` — is a command line for
+// the guest's shell.
 //
 // The split is by "does this resolve to a file", not by looking for spaces or
 // a leading '/', so an absolute script that does not exist is reported as the
 // missing file it is rather than silently becoming a command that fails at
-// boot on a serial console.
-func appCommand(baseDir, cmd string) (script, guestCmd string, err error) {
+// boot on a serial console. The one exception is a bundle, which carries its
+// own scripts: there a path that is not a file of the topology's is a path
+// inside the bundle (./boot.sh).
+func appCommand(res fileResolver, cmd string, bundle bool) (script, scriptName, guestCmd string, err error) {
 	cmd = strings.TrimSpace(cmd)
 	if cmd == "" {
-		return "", "", nil
+		return "", "", "", nil
 	}
 	if looksLikePath(cmd) {
-		script, err := appFile(baseDir, cmd)
-		if err != nil {
-			return "", "", err
+		script, err := res.file(cmd)
+		if bundle && errors.Is(err, errNoFile) {
+			return "", "", cmd, nil
 		}
+		if err != nil {
+			return "", "", "", err
+		}
+		name := path.Base(FileKey(cmd))
 		// cwd is the app's directory in the guest, so this is the script.
-		return script, "./" + filepath.Base(script), nil
+		return script, name, "./" + name, nil
 	}
-	return "", cmd, nil
+	return "", "", cmd, nil
 }
 
 // looksLikePath is true for a bare path — one token, no shell metacharacters.

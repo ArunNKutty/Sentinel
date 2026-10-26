@@ -5,6 +5,8 @@ Wants=network-online.target
 
 [Service]
 Type=simple
+# PLASMAD_LISTEN=:7443 turns on the network API for remote clients.
+EnvironmentFile=-/etc/default/plasmad
 ExecStart=/usr/local/bin/plasmad
 Restart=on-failure
 RestartSec=2

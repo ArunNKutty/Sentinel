@@ -55,6 +55,7 @@ uninstall-extcap:
 
 install-service: install
 	install -m 0644 packaging/plasmad.service /etc/systemd/system/plasmad.service
+	[ -e /etc/default/plasmad ] || install -m 0644 packaging/plasmad.default /etc/default/plasmad
 	systemctl daemon-reload
 	systemctl enable --now plasmad
 	@echo "plasmad is running under systemd: systemctl status plasmad"

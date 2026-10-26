@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 )
 
@@ -22,39 +23,40 @@ import (
 //	apps.list          name<TAB>type<TAB>relative path<TAB>cmd, one per app
 //	<name>/<file>      the payload itself, mode 0755
 //	<name>/<script>    the start script, when cmd named one
+//	<name>/...         a bundle's contents, unpacked (its path is "<name>/.")
 //
 // The guest's ne-bootstrap mounts it at AppsMount and walks apps.list.
 
-// appsDiskSlack is headroom over the payloads for filesystem metadata.
-const appsDiskSlack = 4 << 20
+// appsDiskSlack is headroom over the payloads for filesystem metadata: a
+// floor, plus a share of the payload (extent blocks) and a block per file
+// (each file's last block is partly empty).
+const (
+	appsDiskSlack   = 16 << 20
+	appsDiskPerFile = 8 << 10
+)
 
 // appsDiskMinSize is the floor: mke2fs refuses to build an ext4 much smaller.
 const appsDiskMinSize = 16 << 20
 
-// AppsDiskPath is where a VM's applications image lives. Deterministic from
-// the ID so a leftover image is recognisable after a lost run.
-func AppsDiskPath(id string) string {
-	return filepath.Join(RuntimeDir, id+"-apps.img")
-}
-
-// buildAppsDisk stages every app and packs them into one image for this VM.
+// buildAppsDisk stages every app and packs them into one image at img.
 // Returns "" when the node declares no apps, so callers can attach
 // unconditionally.
-func buildAppsDisk(id string, apps []AppSpec) (string, error) {
+func buildAppsDisk(img string, apps []AppSpec) (string, error) {
 	if len(apps) == 0 {
 		return "", nil
 	}
 
-	stage := filepath.Join(RunDir, "appstage", id)
-	if err := os.RemoveAll(stage); err != nil {
-		return "", fmt.Errorf("clear app staging: %w", err)
+	if err := os.MkdirAll(RunDir, 0o755); err != nil {
+		return "", err
 	}
-	if err := os.MkdirAll(stage, 0o755); err != nil {
+	stage, err := os.MkdirTemp(RunDir, "appstage-")
+	if err != nil {
 		return "", fmt.Errorf("app staging: %w", err)
 	}
 	defer os.RemoveAll(stage)
 
 	var total int64
+	files := 0
 	list := &strings.Builder{}
 	for _, a := range apps {
 		dir := filepath.Join(stage, a.Name)
@@ -62,7 +64,18 @@ func buildAppsDisk(id string, apps []AppSpec) (string, error) {
 			return "", fmt.Errorf("app %q: %w", a.Name, err)
 		}
 		file := payloadName(a)
-		n, err := copyFile(a.Path, filepath.Join(dir, file))
+		var n int64
+		if a.Type == AppTypeBundle {
+			// "<name>/." keeps the guest bootstrap unchanged: it runs cmd from
+			// dirname($APP), which is then the unpacked bundle itself.
+			var c int
+			n, c, err = extractBundle(a.Path, dir)
+			files += c
+			file = "."
+		} else {
+			n, err = copyFile(a.Path, filepath.Join(dir, file))
+			files++
+		}
 		if err != nil {
 			return "", fmt.Errorf("app %q: %w", a.Name, err)
 		}
@@ -70,11 +83,12 @@ func buildAppsDisk(id string, apps []AppSpec) (string, error) {
 		// A start script travels with the payload; the guest runs it as
 		// ./<script> from the app's directory (see AppSpec.Cmd).
 		if a.Script != "" {
-			n, err := copyFile(a.Script, filepath.Join(dir, filepath.Base(a.Script)))
+			n, err := copyFile(a.Script, filepath.Join(dir, scriptName(a)))
 			if err != nil {
 				return "", fmt.Errorf("app %q: start script: %w", a.Name, err)
 			}
 			total += n
+			files++
 		}
 		fmt.Fprintf(list, "%s\t%s\t%s/%s\t%s\n", a.Name, a.Type, a.Name, file, a.Cmd)
 	}
@@ -82,12 +96,9 @@ func buildAppsDisk(id string, apps []AppSpec) (string, error) {
 		return "", fmt.Errorf("apps.list: %w", err)
 	}
 
-	if err := os.MkdirAll(RuntimeDir, 0o755); err != nil {
-		return "", err
-	}
-	img := AppsDiskPath(id)
 	os.Remove(img)
-	size := total + appsDiskSlack
+	files += 2 * len(apps) // directories, apps.list
+	size := total + total/32 + int64(files)*appsDiskPerFile + appsDiskSlack
 	if size < appsDiskMinSize {
 		size = appsDiskMinSize
 	}
@@ -102,8 +113,11 @@ func buildAppsDisk(id string, apps []AppSpec) (string, error) {
 	f.Close()
 
 	// -d populates from the staging tree, so no mount and no root beyond what
-	// the daemon already has.
-	out, err := exec.Command("mke2fs", "-q", "-t", "ext4",
+	// the daemon already has. The guest mounts it read-only, so it needs no
+	// journal (which on a multi-GB image would outgrow the slack) and no
+	// blocks reserved for root; -N makes room for a bundle's many files.
+	out, err := exec.Command("mke2fs", "-q", "-t", "ext4", "-O", "^has_journal", "-m", "0",
+		"-N", strconv.Itoa(files+1024),
 		"-L", AppsDiskLabel, "-d", stage, "-F", img).CombinedOutput()
 	if err != nil {
 		os.Remove(img)
@@ -112,14 +126,26 @@ func buildAppsDisk(id string, apps []AppSpec) (string, error) {
 	return img, nil
 }
 
-// payloadName is the payload's file name inside the app's directory. A path
-// ending in a separator has no usable base name, so fall back to the app name.
+// payloadName is the payload's file name inside the app's directory: the name
+// it was written under, even when Path is a content-addressed store entry. A
+// path ending in a separator has no usable base name, so fall back to the app
+// name.
 func payloadName(a AppSpec) string {
+	if a.FileName != "" {
+		return a.FileName
+	}
 	file := filepath.Base(a.Path)
 	if file == "." || file == string(filepath.Separator) {
 		return a.Name
 	}
 	return file
+}
+
+func scriptName(a AppSpec) string {
+	if a.ScriptName != "" {
+		return a.ScriptName
+	}
+	return filepath.Base(a.Script)
 }
 
 // copyFile copies src to dst as an executable, returning the bytes written.

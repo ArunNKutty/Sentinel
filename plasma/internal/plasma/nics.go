@@ -164,7 +164,10 @@ func linkInfoCredential(id string, nics []NicRecord) string {
 	fmt.Fprintf(&b, "vm %s\n", id)
 	for _, n := range nics {
 		to, addr := n.Bridge, n.Address
-		if to == "" {
+		switch {
+		case n.Segment != "":
+			to = n.Segment
+		case to == "":
 			to = "host:" + n.Tap
 		}
 		if addr == "" {

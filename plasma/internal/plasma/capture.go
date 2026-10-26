@@ -68,7 +68,7 @@ func ResolveCaptureTarget(target string, state *State) (string, error) {
 		return Bridge, nil
 	}
 	id, nic, hasNic := strings.Cut(target, ":")
-	for _, v := range state.List() {
+	for _, v := range state.InLab("") {
 		if !hasNic && v.Status == StatusRunning && isLinkBridge(target) {
 			for _, n := range v.Nics {
 				if n.Bridge == target {

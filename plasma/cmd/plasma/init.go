@@ -214,43 +214,7 @@ func checkPrerequisites() int {
 	return problems
 }
 
-// guestKernelVersion reads the release string out of the bzImage. The setup
-// header stores a pointer to it at offset 0x20E, relative to 0x200 — scanning
-// for something version-shaped instead would happily return the Debian package
-// version (6.18.10-1) rather than the release (6.18.10+deb14-cloud-amd64),
-// and the release is what a module's vermagic must match.
-func guestKernelVersion() string { return kernelRelease(plasma.KernelPath) }
-
-func kernelRelease(path string) string {
-	f, err := os.Open(path)
-	if err != nil {
-		return ""
-	}
-	defer f.Close()
-
-	var ptr [2]byte
-	if _, err := f.ReadAt(ptr[:], 0x20E); err != nil {
-		return "installed"
-	}
-	off := int64(ptr[0]) | int64(ptr[1])<<8
-	if off == 0 {
-		return "installed"
-	}
-
-	buf := make([]byte, 128)
-	n, err := f.ReadAt(buf, off+0x200)
-	if n == 0 && err != nil {
-		return "installed"
-	}
-	// The string is NUL-terminated and followed by the build details.
-	s, _, _ := strings.Cut(string(buf[:n]), "\x00")
-	if s = strings.TrimSpace(s); s == "" {
-		return "installed"
-	}
-	// Keep just the release, dropping " (builder@host) #1 SMP ...".
-	release, _, _ := strings.Cut(s, " ")
-	return release
-}
+func guestKernelVersion() string { return plasma.KernelRelease(plasma.KernelPath) }
 
 func reportFleet() {
 	vms, err := plasma.NewClient(plasma.SocketPath).List()

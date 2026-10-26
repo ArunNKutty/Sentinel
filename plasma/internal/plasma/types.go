@@ -53,6 +53,9 @@ const (
 )
 
 type VmRecord struct {
+	// Lab scopes the ID: two labs may both run a "fabric". Empty for the
+	// legacy fleet launched with `plasma vm launch` / `vm --topology`.
+	Lab           string `json:"lab,omitempty"`
 	ID            string `json:"id"`
 	Group         string `json:"group"`
 	Status        Status `json:"status"`
@@ -152,6 +155,10 @@ type NicRecord struct {
 	MAC     string `json:"mac"`
 	Bridge  string `json:"bridge,omitempty"`
 	Address string `json:"address,omitempty"`
+	// Segment is the topology's own name for what this NIC is wired to
+	// (pbr-wire, plk-<hash>, host:<ifname>) when the host interface is named
+	// differently, as it is in a lab. It is what the guest is told.
+	Segment string `json:"segment,omitempty"`
 }
 
 // AppSpec is one application deployed onto a node: a payload to carry in and
@@ -163,8 +170,12 @@ type AppSpec struct {
 	// program the guest runs: Go binary, Python script, anything executable).
 	// Inferred from the path's extension when omitted.
 	Type string `yaml:"type,omitempty" json:"type,omitempty"`
-	// Path is the host-side payload: a Go executable, a .ko, a script.
+	// Path is the host-side payload: a Go executable, a .ko, a script, a
+	// bundle (.tar, .tar.gz, .tgz).
 	Path string `yaml:"path" json:"path"`
+	// Artifact names the payload by content hash (sha256:<hex>) instead of a
+	// path: something already uploaded to the engine. Lab topologies only.
+	Artifact string `yaml:"artifact,omitempty" json:"artifact,omitempty"`
 	// Cmd starts the app. Two forms, distinguished by whether it names a file
 	// on the host: a start script (absolute, or relative to the topology
 	// file) is packed onto the apps disk beside the payload and executed
@@ -177,6 +188,11 @@ type AppSpec struct {
 	// Script is the host path of a start script to deploy, set by topology
 	// resolution when Cmd named one. Not written by hand.
 	Script string `yaml:"-" json:"script,omitempty"`
+	// FileName and ScriptName are the names the payload and script were
+	// written under, when Path and Script point into the artifact store
+	// (whose entries are named by hash). The guest sees these names.
+	FileName   string `yaml:"-" json:"file_name,omitempty"`
+	ScriptName string `yaml:"-" json:"script_name,omitempty"`
 }
 
 // App types. A topology may state one explicitly; otherwise a .ko is a kernel
@@ -184,6 +200,9 @@ type AppSpec struct {
 const (
 	AppTypeKernel    = "kernel"
 	AppTypeUserspace = "userspace"
+	// AppTypeBundle is a tarball unpacked into the app's directory; its cmd
+	// (required) runs from there, so `cmd: ./boot.sh` names a file inside it.
+	AppTypeBundle = "bundle"
 )
 
 // DeclaredLink is a link from a topology file, as written. The wiring itself
